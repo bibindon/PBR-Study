@@ -1,5 +1,6 @@
 ﻿#pragma comment( lib, "d3d9.lib" )
 #pragma comment( lib, "comdlg32.lib" )
+#pragma comment( lib, "comctl32.lib" )
 #if defined(DEBUG) || defined(_DEBUG)
 #pragma comment( lib, "d3dx9d.lib" )
 #else
@@ -9,9 +10,12 @@
 #include <d3d9.h>
 #include <d3dx9.h>
 #include <commdlg.h>
+#include <commctrl.h>
 #include <tchar.h>
 #include <cassert>
+#include <cstdlib>
 #include <cmath>
+#include <cstdio>
 #include <cwctype>
 #include <map>
 #include <string>
@@ -22,6 +26,8 @@
 static const int WINDOW_SIZE_W = 1920;
 static const int WINDOW_SIZE_H = 1080;
 static const UINT ID_BUTTON_OPEN_MODEL = 1001;
+static const UINT ID_EDIT_LIGHT_POWER = 1002;
+static const UINT ID_SLIDER_LIGHT_POWER = 1003;
 
 struct MeshMaterial
 {
@@ -76,7 +82,8 @@ LARGE_INTEGER       g_perfFrequency = {};
 LARGE_INTEGER       g_prevFrameCounter = {};
 const D3DXVECTOR4   g_lightDirectionW(0.35f, 0.85f, -0.40f, 0.0f);
 const D3DXVECTOR4   g_lightColor(1.0f, 1.0f, 1.0f, 1.0f);
-const float         g_lightPower = 3.14159265f;
+float               g_lightPower = 3.14159f;
+bool                g_isUpdatingLightPowerUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -138,6 +145,100 @@ static std::wstring AnsiToWide(const char* text)
     std::vector<wchar_t> buffer(static_cast<size_t>(length), L'\0');
     MultiByteToWideChar(CP_ACP, 0, text, -1, &buffer[0], length);
     return std::wstring(&buffer[0]);
+}
+
+static float ClampLightPower(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 10.0f)
+    {
+        return 10.0f;
+    }
+    return value;
+}
+
+static std::wstring FormatLightPowerText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.5f", value);
+    return std::wstring(buffer);
+}
+
+static LONG LightPowerToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampLightPower(value) * 100.0f + 0.5f);
+}
+
+static float SliderPositionToLightPower(LONG sliderPosition)
+{
+    return ClampLightPower(static_cast<float>(sliderPosition) / 100.0f);
+}
+
+static void SyncLightPowerUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_LIGHT_POWER);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_LIGHT_POWER);
+
+    g_isUpdatingLightPowerUi = true;
+    const std::wstring text = FormatLightPowerText(g_lightPower);
+    SetWindowTextW(hEdit, text.c_str());
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, LightPowerToSliderPosition(g_lightPower));
+    }
+    g_isUpdatingLightPowerUi = false;
+}
+
+static void ApplyLightPowerFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_LIGHT_POWER);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_lightPower = ClampLightPower(static_cast<float>(parsed));
+    SyncLightPowerUi(hWnd);
+}
+
+static void ApplyLightPowerFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_LIGHT_POWER);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_lightPower = SliderPositionToLightPower(sliderPosition);
+    SyncLightPowerUi(hWnd);
 }
 
 static void ReleaseMeshResources()
@@ -522,8 +623,8 @@ static void ShowModelDialog()
 {
     if (g_hControlDialog == NULL)
     {
-        const int dialogWidth = 340;
-        const int dialogHeight = 150;
+        const int dialogWidth = 520;
+        const int dialogHeight = 280;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -545,6 +646,7 @@ static void ShowModelDialog()
     SetCursorVisible(true);
     ShowWindow(g_hControlDialog, SW_SHOWNORMAL);
     UpdateWindow(g_hControlDialog);
+    SyncLightPowerUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -838,6 +940,12 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
     dialogWindowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     dialogWindowClass.lpszClassName = L"ModelControlDialog";
 
+    INITCOMMONCONTROLSEX commonControls;
+    ZeroMemory(&commonControls, sizeof(commonControls));
+    commonControls.dwSize = sizeof(commonControls);
+    commonControls.dwICC = ICC_BAR_CLASSES;
+    InitCommonControlsEx(&commonControls);
+
     ATOM mainAtom = RegisterClassExW(&mainWindowClass);
     ATOM dialogAtom = RegisterClassExW(&dialogWindowClass);
     assert(mainAtom != 0);
@@ -964,7 +1072,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       WS_CHILD | WS_VISIBLE,
                       16,
                       16,
-                      280,
+                      420,
                       20,
                       hWnd,
                       NULL,
@@ -976,7 +1084,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                       16,
                       50,
-                      150,
+                      180,
                       32,
                       hWnd,
                       reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BUTTON_OPEN_MODEL)),
@@ -988,12 +1096,93 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       WS_CHILD | WS_VISIBLE,
                       16,
                       92,
-                      280,
+                      420,
                       20,
                       hWnd,
                       NULL,
                       g_hInstance,
                       NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"Light Power  Intensity : 0.0 - 10.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      122,
+                      300,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      146,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSlider = CreateWindowW(TRACKBAR_CLASSW,
+                                     L"",
+                                     WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                     52,
+                                     142,
+                                     300,
+                                     32,
+                                     hWnd,
+                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_LIGHT_POWER)),
+                                     g_hInstance,
+                                     NULL);
+        if (hSlider != NULL)
+        {
+            SendMessageW(hSlider, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSlider, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSlider, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSlider, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"10.0",
+                      WS_CHILD | WS_VISIBLE,
+                      360,
+                      146,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"3.14159",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      410,
+                      142,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_LIGHT_POWER)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"PBR Diffuseモード(F2)で使用します。",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      188,
+                      320,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        SyncLightPowerUi(hWnd);
         return 0;
     }
 
@@ -1002,6 +1191,21 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         if (LOWORD(wParam) == ID_BUTTON_OPEN_MODEL && HIWORD(wParam) == BN_CLICKED)
         {
             OpenModelFileDialog();
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_LIGHT_POWER && HIWORD(wParam) == EN_CHANGE && !g_isUpdatingLightPowerUi)
+        {
+            ApplyLightPowerFromUi(hWnd);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_HSCROLL:
+    {
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_LIGHT_POWER) && !g_isUpdatingLightPowerUi)
+        {
+            ApplyLightPowerFromSlider(hWnd);
             return 0;
         }
         break;
