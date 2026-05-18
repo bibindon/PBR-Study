@@ -62,11 +62,26 @@ float4 PixelShader1(float3 posWorld  : TEXCOORD0,
     return float4(finalColor, g_materialDiffuse.a);
 }
 
+float4 SkyboxPixelShader(float3 posWorld : TEXCOORD0) : COLOR
+{
+    float3 sampleDir = normalize(posWorld - g_eyePosW);
+    return float4(texCUBE(EnvSamp, sampleDir).rgb, 1.0f);
+}
+
 technique Technique1
 {
     pass P0
     {
         VertexShader = compile vs_3_0 VertexShader1();
         PixelShader = compile ps_3_0 PixelShader1();
+    }
+}
+
+technique SkyboxTechnique
+{
+    pass P0
+    {
+        VertexShader = compile vs_3_0 VertexShader1();
+        PixelShader = compile ps_3_0 SkyboxPixelShader();
     }
 }

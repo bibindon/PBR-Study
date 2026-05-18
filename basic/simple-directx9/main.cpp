@@ -12,13 +12,15 @@
 #include <tchar.h>
 #include <cassert>
 #include <cmath>
+#include <cwctype>
+#include <map>
 #include <string>
 #include <vector>
 
 #define SAFE_RELEASE(p) { if (p) { (p)->Release(); (p) = NULL; } }
 
-static const int WINDOW_SIZE_W = 1600;
-static const int WINDOW_SIZE_H = 900;
+static const int WINDOW_SIZE_W = 1920;
+static const int WINDOW_SIZE_H = 1080;
 static const UINT ID_BUTTON_OPEN_MODEL = 1001;
 
 struct MeshMaterial
@@ -51,6 +53,7 @@ std::vector<MeshMaterial> g_materials;
 std::wstring        g_loadedMeshPath;
 D3DXVECTOR3         g_modelCenter(0.0f, 0.0f, 0.0f);
 float               g_modelRadius = 1.0f;
+LPD3DXMESH          g_pBackgroundMesh = NULL;
 
 // Env Cube
 LPDIRECT3DCUBETEXTURE9  g_pEnvCube = NULL;
@@ -98,6 +101,23 @@ static std::wstring JoinPath(const std::wstring& dir, const std::wstring& fileNa
     return dir + L"\\" + fileName;
 }
 
+static std::wstring NormalizePathKey(const std::wstring& path)
+{
+    std::wstring normalized = path;
+    for (size_t i = 0; i < normalized.size(); ++i)
+    {
+        if (normalized[i] == L'/')
+        {
+            normalized[i] = L'\\';
+        }
+        else
+        {
+            normalized[i] = static_cast<wchar_t>(towlower(normalized[i]));
+        }
+    }
+    return normalized;
+}
+
 static std::wstring AnsiToWide(const char* text)
 {
     if (text == NULL || text[0] == '\0')
@@ -125,6 +145,11 @@ static void ReleaseMeshResources()
     g_materials.clear();
     g_dwNumMaterials = 0;
     SAFE_RELEASE(g_pMesh);
+}
+
+static void ReleaseBackgroundResources()
+{
+    SAFE_RELEASE(g_pBackgroundMesh);
 }
 
 static void SetCursorVisible(bool visible)
@@ -182,7 +207,8 @@ static void ToggleCursorVisible()
 static void ResetCameraForModel()
 {
     const float safeRadius = (g_modelRadius > 0.001f) ? g_modelRadius : 1.0f;
-    g_cameraPosition = D3DXVECTOR3(0.0f, safeRadius * 0.35f, -safeRadius * 3.0f);
+    const float cameraDistance = (safeRadius > 2.0f) ? safeRadius * 1.25f : 2.0f;
+    g_cameraPosition = D3DXVECTOR3(0.0f, safeRadius * 0.20f, -cameraDistance);
     g_cameraYaw = 0.0f;
     g_cameraPitch = 0.0f;
 
@@ -233,6 +259,7 @@ static bool LoadMeshFromFile(const std::wstring& filePath)
     {
         const D3DXMATERIAL* d3dxMaterials = static_cast<const D3DXMATERIAL*>(materialBuffer->GetBufferPointer());
         const std::wstring baseDirectory = GetDirectoryPath(filePath);
+        std::map<std::wstring, LPDIRECT3DTEXTURE9> textureCache;
         newMaterials.resize(materialCount);
 
         for (DWORD i = 0; i < materialCount; ++i)
@@ -244,15 +271,40 @@ static bool LoadMeshFromFile(const std::wstring& filePath)
             {
                 const std::wstring textureName = AnsiToWide(d3dxMaterials[i].pTextureFilename);
                 const std::wstring texturePath = JoinPath(baseDirectory, textureName);
+                const std::wstring primaryKey = NormalizePathKey(texturePath);
+                const std::wstring fallbackKey = NormalizePathKey(textureName);
                 LPDIRECT3DTEXTURE9 texture = NULL;
 
-                hr = D3DXCreateTextureFromFileW(g_pd3dDevice, texturePath.c_str(), &texture);
-                if (FAILED(hr))
+                std::map<std::wstring, LPDIRECT3DTEXTURE9>::const_iterator cacheIt = textureCache.find(primaryKey);
+                if (cacheIt == textureCache.end())
                 {
-                    hr = D3DXCreateTextureFromFileW(g_pd3dDevice, textureName.c_str(), &texture);
+                    cacheIt = textureCache.find(fallbackKey);
                 }
 
-                if (SUCCEEDED(hr))
+                if (cacheIt != textureCache.end())
+                {
+                    texture = cacheIt->second;
+                    texture->AddRef();
+                }
+                else
+                {
+                    hr = D3DXCreateTextureFromFileW(g_pd3dDevice, texturePath.c_str(), &texture);
+                    if (SUCCEEDED(hr))
+                    {
+                        textureCache[primaryKey] = texture;
+                        textureCache[fallbackKey] = texture;
+                    }
+                    else
+                    {
+                        hr = D3DXCreateTextureFromFileW(g_pd3dDevice, textureName.c_str(), &texture);
+                        if (SUCCEEDED(hr))
+                        {
+                            textureCache[fallbackKey] = texture;
+                        }
+                    }
+                }
+
+                if (texture != NULL)
                 {
                     newMaterials[i].texture = texture;
                     newMaterials[i].hasTexture = true;
@@ -302,6 +354,36 @@ static bool LoadMeshFromFile(const std::wstring& filePath)
     return true;
 }
 
+static bool LoadBackgroundMesh(const std::wstring& filePath)
+{
+    LPD3DXBUFFER adjacencyBuffer = NULL;
+    LPD3DXBUFFER materialBuffer = NULL;
+    LPD3DXMESH newMesh = NULL;
+    DWORD materialCount = 0;
+
+    HRESULT hr = D3DXLoadMeshFromXW(filePath.c_str(),
+                                    D3DXMESH_MANAGED,
+                                    g_pd3dDevice,
+                                    &adjacencyBuffer,
+                                    &materialBuffer,
+                                    NULL,
+                                    &materialCount,
+                                    &newMesh);
+
+    SAFE_RELEASE(adjacencyBuffer);
+    SAFE_RELEASE(materialBuffer);
+
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(newMesh);
+        return false;
+    }
+
+    ReleaseBackgroundResources();
+    g_pBackgroundMesh = newMesh;
+    return true;
+}
+
 static bool LoadEffectAndAssets()
 {
     HRESULT hr = D3DXCreateEffectFromFileW(g_pd3dDevice,
@@ -342,6 +424,11 @@ static bool LoadEffectAndAssets()
         return false;
     }
 
+    if (!LoadBackgroundMesh(L"cubeBack.x"))
+    {
+        return false;
+    }
+
     return LoadMeshFromFile(L"sphere.x");
 }
 
@@ -356,6 +443,7 @@ static void Cleanup()
     }
 
     ReleaseMeshResources();
+    ReleaseBackgroundResources();
     SAFE_RELEASE(g_pEnvCube);
     SAFE_RELEASE(g_pFont);
     SAFE_RELEASE(g_pEffect);
@@ -491,6 +579,11 @@ static void UpdateCamera(float deltaSeconds)
         return;
     }
 
+    if (GetActiveWindow() != g_hWnd)
+    {
+        return;
+    }
+
     D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
                         sinf(g_cameraPitch),
                         cosf(g_cameraPitch) * cosf(g_cameraYaw));
@@ -613,6 +706,46 @@ static void Render()
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
         g_pEffect->SetTexture("EnvMap", g_pEnvCube);
+
+        if (g_pBackgroundMesh != NULL)
+        {
+            D3DXMATRIX skyScale;
+            D3DXMATRIX skyTranslation;
+            D3DXMATRIX skyWorld;
+            D3DXMATRIX skyWvp;
+
+            D3DXMatrixScaling(&skyScale, 80.0f, 80.0f, 80.0f);
+            D3DXMatrixTranslation(&skyTranslation, eye.x, eye.y, eye.z);
+            skyWorld = skyScale * skyTranslation;
+            skyWvp = skyWorld * mV * mP;
+
+            g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW);
+            g_pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+
+            g_pEffect->SetMatrix("g_matWorldViewProj", &skyWvp);
+            g_pEffect->SetMatrix("g_matWorld", &skyWorld);
+            g_pEffect->SetTechnique("SkyboxTechnique");
+
+            UINT skyPassCount = 0;
+            if (SUCCEEDED(g_pEffect->Begin(&skyPassCount, 0)))
+            {
+                for (UINT skyPassIndex = 0; skyPassIndex < skyPassCount; ++skyPassIndex)
+                {
+                    if (SUCCEEDED(g_pEffect->BeginPass(skyPassIndex)))
+                    {
+                        g_pBackgroundMesh->DrawSubset(0);
+                        g_pEffect->EndPass();
+                    }
+                }
+                g_pEffect->End();
+            }
+
+            g_pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
+            g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+            g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
+            g_pEffect->SetMatrix("g_matWorld", &mW);
+        }
+
         g_pEffect->SetTechnique("Technique1");
 
         UINT passCount = 0;
@@ -770,6 +903,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
+    case WM_ACTIVATEAPP:
+    {
+        if (wParam == FALSE)
+        {
+            SetCursorVisible(true);
+        }
+        return 0;
+    }
+
     case WM_KEYDOWN:
     {
         const bool isFirstPress = (lParam & 0x40000000) == 0;
