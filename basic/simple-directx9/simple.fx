@@ -13,6 +13,8 @@ float g_pbrRoughness;
 float g_pbrMetallic;
 float g_envReflectionIntensity;
 float g_envMaxMipLevel;
+float g_envDiffuseIntensity;
+float g_envDiffuseMipLevel;
 
 #define PI 3.14159265f
 
@@ -183,7 +185,20 @@ float4 PbrDirectLightPixelShader(float3 posWorld  : TEXCOORD0,
     float3 envF = FresnelSchlick(saturate(dot(N, V)), F0);
     float envSpecularStrength = lerp(0.1f, 1.0f, metallic);
     float3 envSpecular = envColor * envF * envSpecularStrength * g_envReflectionIntensity;
-    float3 color = directColor + envSpecular;
+
+    // Simple Diffuse IBL approximation.
+    // This is not a real irradiance map.
+    // It samples the existing environment cube in the normal direction
+    // and adds low-frequency ambient diffuse lighting.
+    float diffuseMipLevel = clamp(g_envDiffuseMipLevel, 0.0f, g_envMaxMipLevel);
+    float3 envDiffuseColor = texCUBElod(EnvSamp, float4(N, diffuseMipLevel)).rgb;
+    if (g_enableSrgbToLinear)
+    {
+        envDiffuseColor = SrgbToLinear(envDiffuseColor);
+    }
+
+    float3 diffuseIBL = envDiffuseColor * albedo * kD * g_envDiffuseIntensity;
+    float3 color = directColor + envSpecular + diffuseIBL;
 
     if (g_enableLinearToSrgb)
     {

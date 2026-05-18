@@ -44,6 +44,10 @@ static const UINT ID_EDIT_ENV_REFLECTION_INTENSITY = 1016;
 static const UINT ID_SLIDER_ENV_REFLECTION_INTENSITY = 1017;
 static const UINT ID_EDIT_ENV_MAX_MIP_LEVEL = 1018;
 static const UINT ID_SLIDER_ENV_MAX_MIP_LEVEL = 1019;
+static const UINT ID_EDIT_ENV_DIFFUSE_INTENSITY = 1020;
+static const UINT ID_SLIDER_ENV_DIFFUSE_INTENSITY = 1021;
+static const UINT ID_EDIT_ENV_DIFFUSE_MIP_LEVEL = 1022;
+static const UINT ID_SLIDER_ENV_DIFFUSE_MIP_LEVEL = 1023;
 
 struct MeshMaterial
 {
@@ -59,6 +63,38 @@ struct MeshMaterial
     }
 };
 
+struct MeshAsset
+{
+    LPD3DXMESH mesh;
+    DWORD numMaterials;
+    std::vector<MeshMaterial> materials;
+    std::wstring sourcePath;
+    D3DXVECTOR3 center;
+    float radius;
+
+    MeshAsset()
+        : mesh(NULL)
+        , numMaterials(0)
+        , center(0.0f, 0.0f, 0.0f)
+        , radius(1.0f)
+    {
+    }
+};
+
+struct ModelInstance
+{
+    size_t assetIndex;
+    D3DXVECTOR3 position;
+    float yawRadians;
+
+    ModelInstance()
+        : assetIndex(0)
+        , position(0.0f, 0.0f, 0.0f)
+        , yawRadians(0.0f)
+    {
+    }
+};
+
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 LRESULT CALLBACK ControlDialogProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -69,12 +105,9 @@ LPD3DXEFFECT        g_pEffect = NULL;
 LPD3DXFONT          g_pFont = NULL;
 
 // Mesh
-LPD3DXMESH          g_pMesh = NULL;
-DWORD               g_dwNumMaterials = 0;
-std::vector<MeshMaterial> g_materials;
+std::vector<MeshAsset> g_meshAssets;
+std::vector<ModelInstance> g_modelInstances;
 std::wstring        g_loadedMeshPath;
-D3DXVECTOR3         g_modelCenter(0.0f, 0.0f, 0.0f);
-float               g_modelRadius = 1.0f;
 LPD3DXMESH          g_pBackgroundMesh = NULL;
 
 // Env Cube
@@ -113,6 +146,10 @@ float               g_envReflectionIntensity = 1.0f;
 bool                g_isUpdatingEnvReflectionUi = false;
 float               g_envMaxMipLevel = 5.0f;
 bool                g_isUpdatingEnvMaxMipUi = false;
+float               g_envDiffuseIntensity = 0.5f;
+bool                g_isUpdatingEnvDiffuseIntensityUi = false;
+float               g_envDiffuseMipLevel = 5.0f;
+bool                g_isUpdatingEnvDiffuseMipUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -254,6 +291,32 @@ static float ClampEnvMaxMipLevel(float value)
     return value;
 }
 
+static float ClampEnvDiffuseIntensity(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 3.0f)
+    {
+        return 3.0f;
+    }
+    return value;
+}
+
+static float ClampEnvDiffuseMipLevel(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 10.0f)
+    {
+        return 10.0f;
+    }
+    return value;
+}
+
 static std::wstring FormatLightPowerText(float value)
 {
     wchar_t buffer[32];
@@ -290,6 +353,20 @@ static std::wstring FormatEnvReflectionIntensityText(float value)
 }
 
 static std::wstring FormatEnvMaxMipLevelText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatEnvDiffuseIntensityText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatEnvDiffuseMipLevelText(float value)
 {
     wchar_t buffer[32];
     swprintf_s(buffer, L"%.3f", value);
@@ -356,6 +433,26 @@ static LONG EnvMaxMipLevelToSliderPosition(float value)
 static float SliderPositionToEnvMaxMipLevel(LONG sliderPosition)
 {
     return ClampEnvMaxMipLevel(static_cast<float>(sliderPosition) / 100.0f);
+}
+
+static LONG EnvDiffuseIntensityToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampEnvDiffuseIntensity(value) * (1000.0f / 3.0f) + 0.5f);
+}
+
+static float SliderPositionToEnvDiffuseIntensity(LONG sliderPosition)
+{
+    return ClampEnvDiffuseIntensity(static_cast<float>(sliderPosition) * (3.0f / 1000.0f));
+}
+
+static LONG EnvDiffuseMipLevelToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampEnvDiffuseMipLevel(value) * 100.0f + 0.5f);
+}
+
+static float SliderPositionToEnvDiffuseMipLevel(LONG sliderPosition)
+{
+    return ClampEnvDiffuseMipLevel(static_cast<float>(sliderPosition) / 100.0f);
 }
 
 static void SyncLightPowerUi(HWND hWnd)
@@ -553,6 +650,62 @@ static void SyncEnvMaxMipUi(HWND hWnd)
     }
 
     g_isUpdatingEnvMaxMipUi = false;
+}
+
+static void SyncEnvDiffuseIntensityUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_DIFFUSE_INTENSITY);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_DIFFUSE_INTENSITY);
+
+    g_isUpdatingEnvDiffuseIntensityUi = true;
+
+    const std::wstring text = FormatEnvDiffuseIntensityText(g_envDiffuseIntensity);
+    SetWindowTextW(hEdit, text.c_str());
+
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, EnvDiffuseIntensityToSliderPosition(g_envDiffuseIntensity));
+    }
+
+    g_isUpdatingEnvDiffuseIntensityUi = false;
+}
+
+static void SyncEnvDiffuseMipUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_DIFFUSE_MIP_LEVEL);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_DIFFUSE_MIP_LEVEL);
+
+    g_isUpdatingEnvDiffuseMipUi = true;
+
+    const std::wstring text = FormatEnvDiffuseMipLevelText(g_envDiffuseMipLevel);
+    SetWindowTextW(hEdit, text.c_str());
+
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, EnvDiffuseMipLevelToSliderPosition(g_envDiffuseMipLevel));
+    }
+
+    g_isUpdatingEnvDiffuseMipUi = false;
 }
 
 static void ApplyLightPowerFromUi(HWND hWnd)
@@ -831,15 +984,100 @@ static void ApplyEnvMaxMipFromSlider(HWND hWnd)
     SyncEnvMaxMipUi(hWnd);
 }
 
+static void ApplyEnvDiffuseIntensityFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_DIFFUSE_INTENSITY);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_envDiffuseIntensity = ClampEnvDiffuseIntensity(static_cast<float>(parsed));
+    SyncEnvDiffuseIntensityUi(hWnd);
+}
+
+static void ApplyEnvDiffuseIntensityFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_DIFFUSE_INTENSITY);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_envDiffuseIntensity = SliderPositionToEnvDiffuseIntensity(sliderPosition);
+    SyncEnvDiffuseIntensityUi(hWnd);
+}
+
+static void ApplyEnvDiffuseMipFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_DIFFUSE_MIP_LEVEL);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_envDiffuseMipLevel = ClampEnvDiffuseMipLevel(static_cast<float>(parsed));
+    SyncEnvDiffuseMipUi(hWnd);
+}
+
+static void ApplyEnvDiffuseMipFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_DIFFUSE_MIP_LEVEL);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_envDiffuseMipLevel = SliderPositionToEnvDiffuseMipLevel(sliderPosition);
+    SyncEnvDiffuseMipUi(hWnd);
+}
+
 static void ReleaseMeshResources()
 {
-    for (size_t i = 0; i < g_materials.size(); ++i)
+    for (size_t assetIndex = 0; assetIndex < g_meshAssets.size(); ++assetIndex)
     {
-        SAFE_RELEASE(g_materials[i].texture);
+        MeshAsset& asset = g_meshAssets[assetIndex];
+        for (size_t materialIndex = 0; materialIndex < asset.materials.size(); ++materialIndex)
+        {
+            SAFE_RELEASE(asset.materials[materialIndex].texture);
+        }
+        asset.materials.clear();
+        asset.numMaterials = 0;
+        SAFE_RELEASE(asset.mesh);
     }
-    g_materials.clear();
-    g_dwNumMaterials = 0;
-    SAFE_RELEASE(g_pMesh);
+    g_meshAssets.clear();
+    g_modelInstances.clear();
+    g_loadedMeshPath.clear();
 }
 
 static void ReleaseBackgroundResources()
@@ -899,9 +1137,38 @@ static void ToggleCursorVisible()
     }
 }
 
-static void ResetCameraForModel()
+static D3DXVECTOR3 GetCameraForwardVector()
 {
-    const float safeRadius = (g_modelRadius > 0.001f) ? g_modelRadius : 1.0f;
+    D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
+                        sinf(g_cameraPitch),
+                        cosf(g_cameraPitch) * cosf(g_cameraYaw));
+    D3DXVec3Normalize(&forward, &forward);
+    return forward;
+}
+
+static D3DXVECTOR3 GetCurrentFocusPoint()
+{
+    const float focusDistance = 2.0f;
+    return g_cameraPosition + GetCameraForwardVector() * focusDistance;
+}
+
+static float GetYawFacingCameraFromPosition(const D3DXVECTOR3& position)
+{
+    D3DXVECTOR3 toCamera = g_cameraPosition - position;
+    toCamera.y = 0.0f;
+
+    const float lengthSq = D3DXVec3LengthSq(&toCamera);
+    if (lengthSq < 0.000001f)
+    {
+        return g_cameraYaw;
+    }
+
+    return atan2f(toCamera.x, toCamera.z);
+}
+
+static void ResetCameraForModel(float modelRadius)
+{
+    const float safeRadius = (modelRadius > 0.001f) ? modelRadius : 1.0f;
     const float cameraDistance = (safeRadius > 2.0f) ? safeRadius * 1.25f : 2.0f;
     g_cameraPosition = D3DXVECTOR3(0.0f, safeRadius * 0.20f, -cameraDistance);
     g_cameraYaw = 0.0f;
@@ -915,13 +1182,44 @@ static void ResetCameraForModel()
 
 static void UpdateWindowTitle()
 {
+    wchar_t countText[64];
+    swprintf_s(countText, L"%zu model(s)", g_modelInstances.size());
+
     std::wstring title = L"PBR Study - ";
-    title += g_loadedMeshPath.empty() ? L"(no mesh)" : g_loadedMeshPath;
+    title += countText;
+    if (!g_loadedMeshPath.empty())
+    {
+        title += L" - ";
+        title += g_loadedMeshPath;
+    }
     SetWindowTextW(g_hWnd, title.c_str());
 }
 
-static bool LoadMeshFromFile(const std::wstring& filePath)
+static bool FindMeshAssetIndexByPath(const std::wstring& filePath, size_t* outAssetIndex)
 {
+    const std::wstring normalizedPath = NormalizePathKey(filePath);
+    for (size_t assetIndex = 0; assetIndex < g_meshAssets.size(); ++assetIndex)
+    {
+        if (NormalizePathKey(g_meshAssets[assetIndex].sourcePath) == normalizedPath)
+        {
+            if (outAssetIndex != NULL)
+            {
+                *outAssetIndex = assetIndex;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool LoadMeshAssetFromFile(const std::wstring& filePath, MeshAsset* outAsset)
+{
+    if (outAsset == NULL)
+    {
+        return false;
+    }
+
     LPD3DXBUFFER adjacencyBuffer = NULL;
     LPD3DXBUFFER materialBuffer = NULL;
     LPD3DXMESH newMesh = NULL;
@@ -1026,26 +1324,54 @@ static bool LoadMeshFromFile(const std::wstring& filePath)
         D3DXComputeBoundingSphere(reinterpret_cast<const D3DXVECTOR3*>(vertices),
                                   newMesh->GetNumVertices(),
                                   newMesh->GetNumBytesPerVertex(),
-                                  &g_modelCenter,
-                                  &g_modelRadius);
+                                  &outAsset->center,
+                                  &outAsset->radius);
         newMesh->UnlockVertexBuffer();
     }
     else
     {
-        g_modelCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-        g_modelRadius = 1.0f;
+        outAsset->center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+        outAsset->radius = 1.0f;
     }
 
-    ReleaseMeshResources();
-    g_pMesh = newMesh;
-    g_dwNumMaterials = materialCount;
-    g_materials.swap(newMaterials);
-    g_loadedMeshPath = filePath;
-    ResetCameraForModel();
-    UpdateWindowTitle();
+    outAsset->mesh = newMesh;
+    outAsset->numMaterials = materialCount;
+    outAsset->materials.swap(newMaterials);
+    outAsset->sourcePath = filePath;
 
     SAFE_RELEASE(adjacencyBuffer);
     SAFE_RELEASE(materialBuffer);
+    return true;
+}
+
+static bool AddModelInstanceFromFile(const std::wstring& filePath, bool placeAtFocusPoint)
+{
+    size_t assetIndex = 0;
+    if (!FindMeshAssetIndexByPath(filePath, &assetIndex))
+    {
+        MeshAsset newAsset;
+        if (!LoadMeshAssetFromFile(filePath, &newAsset))
+        {
+            return false;
+        }
+
+        g_meshAssets.push_back(newAsset);
+        assetIndex = g_meshAssets.size() - 1;
+    }
+
+    ModelInstance instance;
+    instance.assetIndex = assetIndex;
+    instance.position = placeAtFocusPoint ? GetCurrentFocusPoint() : D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    instance.yawRadians = GetYawFacingCameraFromPosition(instance.position);
+    g_modelInstances.push_back(instance);
+    g_loadedMeshPath = filePath;
+
+    if (g_modelInstances.size() == 1)
+    {
+        ResetCameraForModel(g_meshAssets[assetIndex].radius);
+    }
+
+    UpdateWindowTitle();
     return true;
 }
 
@@ -1124,7 +1450,7 @@ static bool LoadEffectAndAssets()
         return false;
     }
 
-    return LoadMeshFromFile(L"sphere.x");
+    return AddModelInstanceFromFile(L"sphere.x", false);
 }
 
 static void Cleanup()
@@ -1214,7 +1540,7 @@ static void ShowModelDialog()
     if (g_hControlDialog == NULL)
     {
         const int dialogWidth = 620;
-        const int dialogHeight = 840;
+        const int dialogHeight = 980;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -1243,6 +1569,8 @@ static void ShowModelDialog()
     SyncMetallicUi(g_hControlDialog);
     SyncEnvReflectionUi(g_hControlDialog);
     SyncEnvMaxMipUi(g_hControlDialog);
+    SyncEnvDiffuseIntensityUi(g_hControlDialog);
+    SyncEnvDiffuseMipUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -1265,7 +1593,7 @@ static void OpenModelFileDialog()
         return;
     }
 
-    if (!LoadMeshFromFile(filePath))
+    if (!AddModelInstanceFromFile(filePath, true))
     {
         MessageBoxW(g_hWnd,
                     L"Xファイルの読み込みに失敗しました。",
@@ -1361,8 +1689,7 @@ static void UpdateCamera(float deltaSeconds)
 
 static void Render()
 {
-    D3DXMATRIX mW, mV, mP, mWVP;
-    D3DXMatrixTranslation(&mW, -g_modelCenter.x, -g_modelCenter.y, -g_modelCenter.z);
+    D3DXMATRIX mV, mP;
 
     D3DXVECTOR3 eye = g_cameraPosition;
     D3DXVECTOR4 cameraPositionW(eye.x, eye.y, eye.z, 1.0f);
@@ -1375,14 +1702,13 @@ static void Render()
     g_pEffect->SetFloat("g_pbrMetallic", g_pbrMetallic);
     g_pEffect->SetFloat("g_envReflectionIntensity", g_envReflectionIntensity);
     g_pEffect->SetFloat("g_envMaxMipLevel", g_envMaxMipLevel);
+    g_pEffect->SetFloat("g_envDiffuseIntensity", g_envDiffuseIntensity);
+    g_pEffect->SetFloat("g_envDiffuseMipLevel", g_envDiffuseMipLevel);
     g_pEffect->SetVector("g_pbrBaseColorFactor", &pbrBaseColor);
     g_pEffect->SetBool("g_enableSrgbToLinear", g_enableSrgbToLinear);
     g_pEffect->SetBool("g_enableLinearToSrgb", g_enableLinearToSrgb);
 
-    D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
-                        sinf(g_cameraPitch),
-                        cosf(g_cameraPitch) * cosf(g_cameraYaw));
-    D3DXVec3Normalize(&forward, &forward);
+    D3DXVECTOR3 forward = GetCameraForwardVector();
 
     D3DXVECTOR3 worldUp(0.0f, 1.0f, 0.0f);
     D3DXVECTOR3 right;
@@ -1401,8 +1727,6 @@ static void Render()
                                0.1f,
                                1000.0f);
 
-    mWVP = mW * mV * mP;
-
     g_pd3dDevice->Clear(0,
                         NULL,
                         D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
@@ -1415,36 +1739,44 @@ static void Render()
         TextDraw(g_pFont, L"WASD:移動  E/Q:上下  Esc:カーソル表示切替  F1:モデルダイアログ", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
         TextDraw(g_pFont, g_isCursorVisible ? L"マウスルック: OFF" : L"マウスルック: ON", 10, 34, D3DCOLOR_XRGB(255, 255, 180));
         TextDraw(g_pFont, L"表示モード: PBR Direct Light (Diffuse + Cook-Torrance Specular)", 10, 58, D3DCOLOR_XRGB(180, 255, 220));
-        TextDraw(g_pFont, g_loadedMeshPath.c_str(), 10, 82, D3DCOLOR_XRGB(220, 240, 255));
+        wchar_t modelCountInfo[128];
+        swprintf_s(modelCountInfo, L"Model Count: %zu", g_modelInstances.size());
+        TextDraw(g_pFont, modelCountInfo, 10, 82, D3DCOLOR_XRGB(220, 240, 255));
+        TextDraw(g_pFont, g_loadedMeshPath.empty() ? L"(no recent model)" : g_loadedMeshPath.c_str(), 10, 106, D3DCOLOR_XRGB(220, 240, 255));
         wchar_t pbrInfo[128];
         swprintf_s(pbrInfo,
                    L"PBR BaseColor Factor: %.2f, %.2f, %.2f",
                    g_pbrBaseColorR,
                    g_pbrBaseColorG,
                    g_pbrBaseColorB);
-        TextDraw(g_pFont, pbrInfo, 10, 106, D3DCOLOR_XRGB(220, 255, 220));
-        TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 130, D3DCOLOR_XRGB(220, 235, 255));
+        TextDraw(g_pFont, pbrInfo, 10, 130, D3DCOLOR_XRGB(220, 255, 220));
+        TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 154, D3DCOLOR_XRGB(220, 235, 255));
         wchar_t roughnessInfo[128];
         swprintf_s(roughnessInfo, L"PBR Roughness: %.2f", g_pbrRoughness);
-        TextDraw(g_pFont, roughnessInfo, 10, 154, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, roughnessInfo, 10, 178, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t metallicInfo[128];
         swprintf_s(metallicInfo, L"PBR Metallic: %.2f", g_pbrMetallic);
-        TextDraw(g_pFont, metallicInfo, 10, 178, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, metallicInfo, 10, 202, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envReflectionInfo[128];
         swprintf_s(envReflectionInfo, L"Env Reflection Intensity: %.2f", g_envReflectionIntensity);
-        TextDraw(g_pFont, envReflectionInfo, 10, 202, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, L"Env Reflection: Simple CubeMap", 10, 226, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envReflectionInfo, 10, 226, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Env Reflection: Simple CubeMap", 10, 250, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envMipInfo[128];
         swprintf_s(envMipInfo, L"Env Max Mip Level: %.2f", g_envMaxMipLevel);
-        TextDraw(g_pFont, envMipInfo, 10, 250, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envMipInfo, 10, 274, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envMipApproxInfo[128];
         swprintf_s(envMipApproxInfo, L"Env Mip Approx: %.2f", g_pbrRoughness * g_envMaxMipLevel);
-        TextDraw(g_pFont, envMipApproxInfo, 10, 274, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 298, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 322, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envMipApproxInfo, 10, 298, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t envDiffuseIntensityInfo[128];
+        swprintf_s(envDiffuseIntensityInfo, L"Env Diffuse Intensity: %.2f", g_envDiffuseIntensity);
+        TextDraw(g_pFont, envDiffuseIntensityInfo, 10, 322, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t envDiffuseMipInfo[128];
+        swprintf_s(envDiffuseMipInfo, L"Env Diffuse Mip Level: %.2f", g_envDiffuseMipLevel);
+        TextDraw(g_pFont, envDiffuseMipInfo, 10, 346, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Env Diffuse: Simple Normal CubeMap", 10, 370, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 394, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 418, D3DCOLOR_XRGB(255, 230, 200));
 
-        g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
-        g_pEffect->SetMatrix("g_matWorld", &mW);
         g_pEffect->SetTexture("EnvMap", g_pEnvCube);
 
         if (g_pBackgroundMesh != NULL)
@@ -1480,8 +1812,6 @@ static void Render()
 
             g_pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
             g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-            g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
-            g_pEffect->SetMatrix("g_matWorld", &mW);
         }
 
         g_pEffect->SetTechnique("PbrDirectLightTechnique");
@@ -1493,18 +1823,52 @@ static void Render()
             {
                 if (SUCCEEDED(g_pEffect->BeginPass(passIndex)))
                 {
-                    for (DWORD materialIndex = 0; materialIndex < g_dwNumMaterials; ++materialIndex)
+                    for (size_t instanceIndex = 0; instanceIndex < g_modelInstances.size(); ++instanceIndex)
                     {
-                        const MeshMaterial& material = g_materials[materialIndex];
-                        D3DXVECTOR4 diffuse(material.material.Diffuse.r,
-                                            material.material.Diffuse.g,
-                                            material.material.Diffuse.b,
-                                            material.material.Diffuse.a);
-                        g_pEffect->SetVector("g_materialDiffuse", &diffuse);
-                        g_pEffect->SetBool("g_hasDiffuseTexture", material.hasTexture);
-                        g_pEffect->SetTexture("DiffuseMap", material.texture);
-                        g_pEffect->CommitChanges();
-                        g_pMesh->DrawSubset(materialIndex);
+                        const ModelInstance& instance = g_modelInstances[instanceIndex];
+                        if (instance.assetIndex >= g_meshAssets.size())
+                        {
+                            continue;
+                        }
+
+                        const MeshAsset& asset = g_meshAssets[instance.assetIndex];
+                        if (asset.mesh == NULL)
+                        {
+                            continue;
+                        }
+
+                        D3DXMATRIX mCenterOffset;
+                        D3DXMATRIX mRotation;
+                        D3DXMATRIX mTranslation;
+                        D3DXMATRIX mW;
+                        D3DXMATRIX mWVP;
+                        D3DXMatrixTranslation(&mCenterOffset,
+                                              -asset.center.x,
+                                              -asset.center.y,
+                                              -asset.center.z);
+                        D3DXMatrixRotationY(&mRotation, instance.yawRadians);
+                        D3DXMatrixTranslation(&mTranslation,
+                                              instance.position.x,
+                                              instance.position.y,
+                                              instance.position.z);
+                        mW = mCenterOffset * mRotation * mTranslation;
+                        mWVP = mW * mV * mP;
+                        g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
+                        g_pEffect->SetMatrix("g_matWorld", &mW);
+
+                        for (DWORD materialIndex = 0; materialIndex < asset.numMaterials; ++materialIndex)
+                        {
+                            const MeshMaterial& material = asset.materials[materialIndex];
+                            D3DXVECTOR4 diffuse(material.material.Diffuse.r,
+                                                material.material.Diffuse.g,
+                                                material.material.Diffuse.b,
+                                                material.material.Diffuse.a);
+                            g_pEffect->SetVector("g_materialDiffuse", &diffuse);
+                            g_pEffect->SetBool("g_hasDiffuseTexture", material.hasTexture);
+                            g_pEffect->SetTexture("DiffuseMap", material.texture);
+                            g_pEffect->CommitChanges();
+                            asset.mesh->DrawSubset(materialIndex);
+                        }
                     }
 
                     g_pEffect->EndPass();
@@ -1705,7 +2069,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       NULL);
 
         CreateWindowW(L"BUTTON",
-                      L"Xファイルを開く",
+                      L"Xファイルを追加",
                       WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                       16,
                       44,
@@ -1717,12 +2081,12 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       NULL);
 
         CreateWindowW(L"STATIC",
-                      L"複数マテリアル付きの .x にも対応します。",
+                      L"複数マテリアル付きの .x に対応し、追加したモデルは現在の注視点へ配置します。",
                       WS_CHILD | WS_VISIBLE,
                       16,
                       82,
-                      500,
-                      20,
+                      560,
+                      36,
                       hWnd,
                       NULL,
                       g_hInstance,
@@ -1732,7 +2096,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Light Power  Intensity : 0.0 - 10.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      108,
+                      124,
                       300,
                       20,
                       hWnd,
@@ -1744,7 +2108,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      128,
+                      144,
                       30,
                       20,
                       hWnd,
@@ -1756,7 +2120,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                      L"",
                                      WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                      52,
-                                     124,
+                                     140,
                                      340,
                                      32,
                                      hWnd,
@@ -1775,7 +2139,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"10.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      128,
+                      144,
                       36,
                       20,
                       hWnd,
@@ -1787,7 +2151,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"3.14159",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      124,
+                      140,
                       84,
                       24,
                       hWnd,
@@ -1799,7 +2163,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"PBR Diffuse表示で使用します。",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      162,
+                      178,
                       320,
                       20,
                       hWnd,
@@ -1811,7 +2175,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"PBR Base Color R : 0.0 - 1.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      188,
+                      204,
                       300,
                       20,
                       hWnd,
@@ -1823,7 +2187,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      208,
+                      224,
                       30,
                       20,
                       hWnd,
@@ -1835,7 +2199,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                                L"",
                                                WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                                52,
-                                               204,
+                                               220,
                                                340,
                                                32,
                                                hWnd,
@@ -1854,7 +2218,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      208,
+                      224,
                       30,
                       20,
                       hWnd,
@@ -1866,7 +2230,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.000",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      204,
+                      220,
                       84,
                       24,
                       hWnd,
@@ -1878,7 +2242,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"PBR Base Color G : 0.0 - 1.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      250,
+                      266,
                       300,
                       20,
                       hWnd,
@@ -1890,7 +2254,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      270,
+                      286,
                       30,
                       20,
                       hWnd,
@@ -1902,7 +2266,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                                L"",
                                                WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                                52,
-                                               266,
+                                               282,
                                                340,
                                                32,
                                                hWnd,
@@ -1921,7 +2285,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      270,
+                      286,
                       30,
                       20,
                       hWnd,
@@ -1933,7 +2297,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.000",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      266,
+                      282,
                       84,
                       24,
                       hWnd,
@@ -1945,7 +2309,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"PBR Base Color B : 0.0 - 1.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      312,
+                      328,
                       300,
                       20,
                       hWnd,
@@ -1957,7 +2321,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      332,
+                      348,
                       30,
                       20,
                       hWnd,
@@ -1969,7 +2333,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                                L"",
                                                WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                                52,
-                                               328,
+                                               344,
                                                340,
                                                32,
                                                hWnd,
@@ -1988,7 +2352,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      332,
+                      348,
                       30,
                       20,
                       hWnd,
@@ -2000,7 +2364,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.000",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      328,
+                      344,
                       84,
                       24,
                       hWnd,
@@ -2012,7 +2376,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"PBR Roughness : 0.04 - 1.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      374,
+                      390,
                       300,
                       20,
                       hWnd,
@@ -2024,7 +2388,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.04",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      394,
+                      410,
                       36,
                       20,
                       hWnd,
@@ -2036,7 +2400,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                               L"",
                                               WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                               52,
-                                              390,
+                                              406,
                                               340,
                                               32,
                                               hWnd,
@@ -2055,7 +2419,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      394,
+                      410,
                       30,
                       20,
                       hWnd,
@@ -2067,7 +2431,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.500",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      390,
+                      406,
                       84,
                       24,
                       hWnd,
@@ -2079,7 +2443,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"PBR Metallic : 0.0 - 1.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      436,
+                      452,
                       300,
                       20,
                       hWnd,
@@ -2091,7 +2455,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      456,
+                      472,
                       36,
                       20,
                       hWnd,
@@ -2103,7 +2467,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                              L"",
                                              WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                              52,
-                                             452,
+                                             468,
                                              340,
                                              32,
                                              hWnd,
@@ -2122,7 +2486,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      456,
+                      472,
                       30,
                       20,
                       hWnd,
@@ -2134,7 +2498,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.000",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      452,
+                      468,
                       84,
                       24,
                       hWnd,
@@ -2146,7 +2510,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Env Reflection Intensity : 0.0 - 3.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      498,
+                      514,
                       320,
                       20,
                       hWnd,
@@ -2158,7 +2522,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      518,
+                      534,
                       36,
                       20,
                       hWnd,
@@ -2170,7 +2534,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                                   L"",
                                                   WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                                   52,
-                                                  514,
+                                                  530,
                                                   340,
                                                   32,
                                                   hWnd,
@@ -2189,7 +2553,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"3.0",
                       WS_CHILD | WS_VISIBLE,
                       398,
-                      518,
+                      534,
                       30,
                       20,
                       hWnd,
@@ -2201,7 +2565,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"1.000",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      514,
+                      530,
                       84,
                       24,
                       hWnd,
@@ -2213,7 +2577,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Env Max Mip Level : 0.0 - 10.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      560,
+                      576,
                       320,
                       20,
                       hWnd,
@@ -2225,7 +2589,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"0.0",
                       WS_CHILD | WS_VISIBLE,
                       16,
-                      580,
+                      596,
                       36,
                       20,
                       hWnd,
@@ -2237,7 +2601,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                                               L"",
                                               WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                               52,
-                                              576,
+                                              592,
                                               340,
                                               32,
                                               hWnd,
@@ -2256,7 +2620,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"10.0",
                       WS_CHILD | WS_VISIBLE,
                       392,
-                      580,
+                      596,
                       36,
                       20,
                       hWnd,
@@ -2268,7 +2632,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"5.000",
                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
                       456,
-                      576,
+                      592,
                       84,
                       24,
                       hWnd,
@@ -2276,11 +2640,145 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"STATIC",
+                      L"Env Diffuse Intensity : 0.0 - 3.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      638,
+                      320,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      658,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderEnvDiffuseIntensity = CreateWindowW(TRACKBAR_CLASSW,
+                                                        L"",
+                                                        WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                                        52,
+                                                        654,
+                                                        340,
+                                                        32,
+                                                        hWnd,
+                                                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_ENV_DIFFUSE_INTENSITY)),
+                                                        g_hInstance,
+                                                        NULL);
+        if (hSliderEnvDiffuseIntensity != NULL)
+        {
+            SendMessageW(hSliderEnvDiffuseIntensity, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderEnvDiffuseIntensity, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderEnvDiffuseIntensity, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderEnvDiffuseIntensity, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"3.0",
+                      WS_CHILD | WS_VISIBLE,
+                      398,
+                      658,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"0.500",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      456,
+                      654,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_ENV_DIFFUSE_INTENSITY)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"Env Diffuse Mip Level : 0.0 - 10.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      700,
+                      320,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      720,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderEnvDiffuseMip = CreateWindowW(TRACKBAR_CLASSW,
+                                                  L"",
+                                                  WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                                  52,
+                                                  716,
+                                                  340,
+                                                  32,
+                                                  hWnd,
+                                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_ENV_DIFFUSE_MIP_LEVEL)),
+                                                  g_hInstance,
+                                                  NULL);
+        if (hSliderEnvDiffuseMip != NULL)
+        {
+            SendMessageW(hSliderEnvDiffuseMip, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderEnvDiffuseMip, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderEnvDiffuseMip, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderEnvDiffuseMip, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"10.0",
+                      WS_CHILD | WS_VISIBLE,
+                      392,
+                      720,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"5.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      456,
+                      716,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_ENV_DIFFUSE_MIP_LEVEL)),
+                      g_hInstance,
+                      NULL);
+
         CreateWindowW(L"BUTTON",
                       L"sRGB To Linear",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      626,
+                      766,
                       180,
                       24,
                       hWnd,
@@ -2292,7 +2790,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Linear To sRGB",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      652,
+                      792,
                       180,
                       24,
                       hWnd,
@@ -2307,6 +2805,8 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         SyncMetallicUi(hWnd);
         SyncEnvReflectionUi(hWnd);
         SyncEnvMaxMipUi(hWnd);
+        SyncEnvDiffuseIntensityUi(hWnd);
+        SyncEnvDiffuseMipUi(hWnd);
         return 0;
     }
 
@@ -2357,6 +2857,20 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingEnvMaxMipUi)
         {
             ApplyEnvMaxMipFromUi(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_ENV_DIFFUSE_INTENSITY &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingEnvDiffuseIntensityUi)
+        {
+            ApplyEnvDiffuseIntensityFromUi(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_ENV_DIFFUSE_MIP_LEVEL &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingEnvDiffuseMipUi)
+        {
+            ApplyEnvDiffuseMipFromUi(hWnd);
             return 0;
         }
         if ((LOWORD(wParam) == ID_CHECK_SRGB_TO_LINEAR || LOWORD(wParam) == ID_CHECK_LINEAR_TO_SRGB) &&
@@ -2414,6 +2928,18 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingEnvMaxMipUi)
         {
             ApplyEnvMaxMipFromSlider(hWnd);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_ENV_DIFFUSE_INTENSITY) &&
+            !g_isUpdatingEnvDiffuseIntensityUi)
+        {
+            ApplyEnvDiffuseIntensityFromSlider(hWnd);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_ENV_DIFFUSE_MIP_LEVEL) &&
+            !g_isUpdatingEnvDiffuseMipUi)
+        {
+            ApplyEnvDiffuseMipFromSlider(hWnd);
             return 0;
         }
         break;
