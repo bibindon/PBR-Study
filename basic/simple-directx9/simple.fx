@@ -12,6 +12,7 @@ float g_lightPower;
 float g_pbrRoughness;
 float g_pbrMetallic;
 float g_envReflectionIntensity;
+float g_envMaxMipLevel;
 
 #define PI 3.14159265f
 
@@ -168,7 +169,12 @@ float4 PbrDirectLightPixelShader(float3 posWorld  : TEXCOORD0,
     float3 radiance = g_lightColor.rgb * g_lightPower;
     float3 directColor = (diffuseBRDF + specularBRDF) * radiance * NdotL;
 
-    float3 envColor = texCUBE(EnvSamp, R).rgb;
+    // NOTE:
+    // Roughness-based env blur uses cube texture mip levels.
+    // If Texture1.dds has no mipmaps, changing roughness may not visibly blur the reflection.
+    float mipLevel = saturate(roughness) * g_envMaxMipLevel;
+    mipLevel = clamp(mipLevel, 0.0f, g_envMaxMipLevel);
+    float3 envColor = texCUBElod(EnvSamp, float4(R, mipLevel)).rgb;
     if (g_enableSrgbToLinear)
     {
         envColor = SrgbToLinear(envColor);

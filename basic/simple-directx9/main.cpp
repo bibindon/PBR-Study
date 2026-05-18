@@ -42,6 +42,8 @@ static const UINT ID_EDIT_METALLIC = 1014;
 static const UINT ID_SLIDER_METALLIC = 1015;
 static const UINT ID_EDIT_ENV_REFLECTION_INTENSITY = 1016;
 static const UINT ID_SLIDER_ENV_REFLECTION_INTENSITY = 1017;
+static const UINT ID_EDIT_ENV_MAX_MIP_LEVEL = 1018;
+static const UINT ID_SLIDER_ENV_MAX_MIP_LEVEL = 1019;
 
 struct MeshMaterial
 {
@@ -109,6 +111,8 @@ float               g_pbrMetallic = 0.0f;
 bool                g_isUpdatingMetallicUi = false;
 float               g_envReflectionIntensity = 1.0f;
 bool                g_isUpdatingEnvReflectionUi = false;
+float               g_envMaxMipLevel = 5.0f;
+bool                g_isUpdatingEnvMaxMipUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -237,6 +241,19 @@ static float ClampEnvReflectionIntensity(float value)
     return value;
 }
 
+static float ClampEnvMaxMipLevel(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 10.0f)
+    {
+        return 10.0f;
+    }
+    return value;
+}
+
 static std::wstring FormatLightPowerText(float value)
 {
     wchar_t buffer[32];
@@ -266,6 +283,13 @@ static std::wstring FormatMetallicText(float value)
 }
 
 static std::wstring FormatEnvReflectionIntensityText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatEnvMaxMipLevelText(float value)
 {
     wchar_t buffer[32];
     swprintf_s(buffer, L"%.3f", value);
@@ -322,6 +346,16 @@ static LONG EnvReflectionIntensityToSliderPosition(float value)
 static float SliderPositionToEnvReflectionIntensity(LONG sliderPosition)
 {
     return ClampEnvReflectionIntensity(static_cast<float>(sliderPosition) * (3.0f / 1000.0f));
+}
+
+static LONG EnvMaxMipLevelToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampEnvMaxMipLevel(value) * 100.0f + 0.5f);
+}
+
+static float SliderPositionToEnvMaxMipLevel(LONG sliderPosition)
+{
+    return ClampEnvMaxMipLevel(static_cast<float>(sliderPosition) / 100.0f);
 }
 
 static void SyncLightPowerUi(HWND hWnd)
@@ -491,6 +525,34 @@ static void SyncEnvReflectionUi(HWND hWnd)
     }
 
     g_isUpdatingEnvReflectionUi = false;
+}
+
+static void SyncEnvMaxMipUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_MAX_MIP_LEVEL);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_MAX_MIP_LEVEL);
+
+    g_isUpdatingEnvMaxMipUi = true;
+
+    const std::wstring text = FormatEnvMaxMipLevelText(g_envMaxMipLevel);
+    SetWindowTextW(hEdit, text.c_str());
+
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, EnvMaxMipLevelToSliderPosition(g_envMaxMipLevel));
+    }
+
+    g_isUpdatingEnvMaxMipUi = false;
 }
 
 static void ApplyLightPowerFromUi(HWND hWnd)
@@ -728,6 +790,45 @@ static void ApplyEnvReflectionFromSlider(HWND hWnd)
     const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
     g_envReflectionIntensity = SliderPositionToEnvReflectionIntensity(sliderPosition);
     SyncEnvReflectionUi(hWnd);
+}
+
+static void ApplyEnvMaxMipFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_MAX_MIP_LEVEL);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_envMaxMipLevel = ClampEnvMaxMipLevel(static_cast<float>(parsed));
+    SyncEnvMaxMipUi(hWnd);
+}
+
+static void ApplyEnvMaxMipFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_MAX_MIP_LEVEL);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_envMaxMipLevel = SliderPositionToEnvMaxMipLevel(sliderPosition);
+    SyncEnvMaxMipUi(hWnd);
 }
 
 static void ReleaseMeshResources()
@@ -1113,7 +1214,7 @@ static void ShowModelDialog()
     if (g_hControlDialog == NULL)
     {
         const int dialogWidth = 620;
-        const int dialogHeight = 760;
+        const int dialogHeight = 840;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -1141,6 +1242,7 @@ static void ShowModelDialog()
     SyncRoughnessUi(g_hControlDialog);
     SyncMetallicUi(g_hControlDialog);
     SyncEnvReflectionUi(g_hControlDialog);
+    SyncEnvMaxMipUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -1272,6 +1374,7 @@ static void Render()
     g_pEffect->SetFloat("g_pbrRoughness", g_pbrRoughness);
     g_pEffect->SetFloat("g_pbrMetallic", g_pbrMetallic);
     g_pEffect->SetFloat("g_envReflectionIntensity", g_envReflectionIntensity);
+    g_pEffect->SetFloat("g_envMaxMipLevel", g_envMaxMipLevel);
     g_pEffect->SetVector("g_pbrBaseColorFactor", &pbrBaseColor);
     g_pEffect->SetBool("g_enableSrgbToLinear", g_enableSrgbToLinear);
     g_pEffect->SetBool("g_enableLinearToSrgb", g_enableLinearToSrgb);
@@ -1331,8 +1434,14 @@ static void Render()
         swprintf_s(envReflectionInfo, L"Env Reflection Intensity: %.2f", g_envReflectionIntensity);
         TextDraw(g_pFont, envReflectionInfo, 10, 202, D3DCOLOR_XRGB(255, 230, 200));
         TextDraw(g_pFont, L"Env Reflection: Simple CubeMap", 10, 226, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 250, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 274, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t envMipInfo[128];
+        swprintf_s(envMipInfo, L"Env Max Mip Level: %.2f", g_envMaxMipLevel);
+        TextDraw(g_pFont, envMipInfo, 10, 250, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t envMipApproxInfo[128];
+        swprintf_s(envMipApproxInfo, L"Env Mip Approx: %.2f", g_pbrRoughness * g_envMaxMipLevel);
+        TextDraw(g_pFont, envMipApproxInfo, 10, 274, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 298, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 322, D3DCOLOR_XRGB(255, 230, 200));
 
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
@@ -1348,7 +1457,7 @@ static void Render()
             skyWorld = skyScale;
             skyWvp = skyWorld * mV * mP;
 
-            g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW);
+            g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
             g_pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 
             g_pEffect->SetMatrix("g_matWorldViewProj", &skyWvp);
@@ -1370,7 +1479,7 @@ static void Render()
             }
 
             g_pd3dDevice->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-            g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+            g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
             g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
             g_pEffect->SetMatrix("g_matWorld", &mW);
         }
@@ -2100,11 +2209,78 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"STATIC",
+                      L"Env Max Mip Level : 0.0 - 10.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      560,
+                      320,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      580,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderEnvMaxMip = CreateWindowW(TRACKBAR_CLASSW,
+                                              L"",
+                                              WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                              52,
+                                              576,
+                                              340,
+                                              32,
+                                              hWnd,
+                                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_ENV_MAX_MIP_LEVEL)),
+                                              g_hInstance,
+                                              NULL);
+        if (hSliderEnvMaxMip != NULL)
+        {
+            SendMessageW(hSliderEnvMaxMip, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderEnvMaxMip, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderEnvMaxMip, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderEnvMaxMip, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"10.0",
+                      WS_CHILD | WS_VISIBLE,
+                      392,
+                      580,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"5.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      456,
+                      576,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_ENV_MAX_MIP_LEVEL)),
+                      g_hInstance,
+                      NULL);
+
         CreateWindowW(L"BUTTON",
                       L"sRGB To Linear",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      564,
+                      626,
                       180,
                       24,
                       hWnd,
@@ -2116,7 +2292,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Linear To sRGB",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      590,
+                      652,
                       180,
                       24,
                       hWnd,
@@ -2130,6 +2306,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         SyncRoughnessUi(hWnd);
         SyncMetallicUi(hWnd);
         SyncEnvReflectionUi(hWnd);
+        SyncEnvMaxMipUi(hWnd);
         return 0;
     }
 
@@ -2173,6 +2350,13 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingEnvReflectionUi)
         {
             ApplyEnvReflectionFromUi(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_ENV_MAX_MIP_LEVEL &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingEnvMaxMipUi)
+        {
+            ApplyEnvMaxMipFromUi(hWnd);
             return 0;
         }
         if ((LOWORD(wParam) == ID_CHECK_SRGB_TO_LINEAR || LOWORD(wParam) == ID_CHECK_LINEAR_TO_SRGB) &&
@@ -2224,6 +2408,12 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingEnvReflectionUi)
         {
             ApplyEnvReflectionFromSlider(hWnd);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_ENV_MAX_MIP_LEVEL) &&
+            !g_isUpdatingEnvMaxMipUi)
+        {
+            ApplyEnvMaxMipFromSlider(hWnd);
             return 0;
         }
         break;
