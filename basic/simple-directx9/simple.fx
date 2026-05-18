@@ -10,6 +10,8 @@ float3 g_lightDirectionW;
 float4 g_lightColor;
 float g_lightPower;
 float g_pbrRoughness;
+float g_pbrMetallic;
+float g_envReflectionIntensity;
 
 #define PI 3.14159265f
 
@@ -140,11 +142,12 @@ float4 PbrDirectLightPixelShader(float3 posWorld  : TEXCOORD0,
     float3 L = normalize(g_lightDirectionW);
     float3 V = normalize(g_cameraPositionW - posWorld);
     float3 H = normalize(L + V);
+    float3 R = reflect(-V, N);
     float NdotL = saturate(dot(N, L));
     float NdotV = saturate(dot(N, V));
 
     float roughness = max(g_pbrRoughness, 0.04f);
-    float metallic = 0.0f;
+    float metallic = saturate(g_pbrMetallic);
 
     float3 F0 = float3(0.04f, 0.04f, 0.04f);
     F0 = lerp(F0, albedo, metallic);
@@ -163,7 +166,18 @@ float4 PbrDirectLightPixelShader(float3 posWorld  : TEXCOORD0,
 
     float3 diffuseBRDF = kD * albedo * (1.0f / PI);
     float3 radiance = g_lightColor.rgb * g_lightPower;
-    float3 color = (diffuseBRDF + specularBRDF) * radiance * NdotL;
+    float3 directColor = (diffuseBRDF + specularBRDF) * radiance * NdotL;
+
+    float3 envColor = texCUBE(EnvSamp, R).rgb;
+    if (g_enableSrgbToLinear)
+    {
+        envColor = SrgbToLinear(envColor);
+    }
+
+    float3 envF = FresnelSchlick(saturate(dot(N, V)), F0);
+    float envSpecularStrength = lerp(0.1f, 1.0f, metallic);
+    float3 envSpecular = envColor * envF * envSpecularStrength * g_envReflectionIntensity;
+    float3 color = directColor + envSpecular;
 
     if (g_enableLinearToSrgb)
     {

@@ -38,6 +38,10 @@ static const UINT ID_CHECK_SRGB_TO_LINEAR = 1010;
 static const UINT ID_CHECK_LINEAR_TO_SRGB = 1011;
 static const UINT ID_EDIT_ROUGHNESS = 1012;
 static const UINT ID_SLIDER_ROUGHNESS = 1013;
+static const UINT ID_EDIT_METALLIC = 1014;
+static const UINT ID_SLIDER_METALLIC = 1015;
+static const UINT ID_EDIT_ENV_REFLECTION_INTENSITY = 1016;
+static const UINT ID_SLIDER_ENV_REFLECTION_INTENSITY = 1017;
 
 struct MeshMaterial
 {
@@ -101,6 +105,10 @@ bool                g_enableSrgbToLinear = true;
 bool                g_enableLinearToSrgb = true;
 float               g_pbrRoughness = 0.5f;
 bool                g_isUpdatingRoughnessUi = false;
+float               g_pbrMetallic = 0.0f;
+bool                g_isUpdatingMetallicUi = false;
+float               g_envReflectionIntensity = 1.0f;
+bool                g_isUpdatingEnvReflectionUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -203,6 +211,32 @@ static float ClampRoughness(float value)
     return value;
 }
 
+static float ClampMetallic(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 1.0f)
+    {
+        return 1.0f;
+    }
+    return value;
+}
+
+static float ClampEnvReflectionIntensity(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 3.0f)
+    {
+        return 3.0f;
+    }
+    return value;
+}
+
 static std::wstring FormatLightPowerText(float value)
 {
     wchar_t buffer[32];
@@ -218,6 +252,20 @@ static std::wstring FormatBaseColorText(float value)
 }
 
 static std::wstring FormatRoughnessText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatMetallicText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatEnvReflectionIntensityText(float value)
 {
     wchar_t buffer[32];
     swprintf_s(buffer, L"%.3f", value);
@@ -254,6 +302,26 @@ static float SliderPositionToRoughness(LONG sliderPosition)
 {
     const float t = static_cast<float>(sliderPosition) / 1000.0f;
     return ClampRoughness(0.04f + t * (1.0f - 0.04f));
+}
+
+static LONG MetallicToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampMetallic(value) * 1000.0f + 0.5f);
+}
+
+static float SliderPositionToMetallic(LONG sliderPosition)
+{
+    return ClampMetallic(static_cast<float>(sliderPosition) / 1000.0f);
+}
+
+static LONG EnvReflectionIntensityToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampEnvReflectionIntensity(value) * (1000.0f / 3.0f) + 0.5f);
+}
+
+static float SliderPositionToEnvReflectionIntensity(LONG sliderPosition)
+{
+    return ClampEnvReflectionIntensity(static_cast<float>(sliderPosition) * (3.0f / 1000.0f));
 }
 
 static void SyncLightPowerUi(HWND hWnd)
@@ -367,6 +435,62 @@ static void SyncRoughnessUi(HWND hWnd)
     }
 
     g_isUpdatingRoughnessUi = false;
+}
+
+static void SyncMetallicUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_METALLIC);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_METALLIC);
+
+    g_isUpdatingMetallicUi = true;
+
+    const std::wstring text = FormatMetallicText(g_pbrMetallic);
+    SetWindowTextW(hEdit, text.c_str());
+
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, MetallicToSliderPosition(g_pbrMetallic));
+    }
+
+    g_isUpdatingMetallicUi = false;
+}
+
+static void SyncEnvReflectionUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_REFLECTION_INTENSITY);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_REFLECTION_INTENSITY);
+
+    g_isUpdatingEnvReflectionUi = true;
+
+    const std::wstring text = FormatEnvReflectionIntensityText(g_envReflectionIntensity);
+    SetWindowTextW(hEdit, text.c_str());
+
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, EnvReflectionIntensityToSliderPosition(g_envReflectionIntensity));
+    }
+
+    g_isUpdatingEnvReflectionUi = false;
 }
 
 static void ApplyLightPowerFromUi(HWND hWnd)
@@ -526,6 +650,84 @@ static void ApplyRoughnessFromSlider(HWND hWnd)
     const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
     g_pbrRoughness = SliderPositionToRoughness(sliderPosition);
     SyncRoughnessUi(hWnd);
+}
+
+static void ApplyMetallicFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_METALLIC);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_pbrMetallic = ClampMetallic(static_cast<float>(parsed));
+    SyncMetallicUi(hWnd);
+}
+
+static void ApplyMetallicFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_METALLIC);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_pbrMetallic = SliderPositionToMetallic(sliderPosition);
+    SyncMetallicUi(hWnd);
+}
+
+static void ApplyEnvReflectionFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ENV_REFLECTION_INTENSITY);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_envReflectionIntensity = ClampEnvReflectionIntensity(static_cast<float>(parsed));
+    SyncEnvReflectionUi(hWnd);
+}
+
+static void ApplyEnvReflectionFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ENV_REFLECTION_INTENSITY);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_envReflectionIntensity = SliderPositionToEnvReflectionIntensity(sliderPosition);
+    SyncEnvReflectionUi(hWnd);
 }
 
 static void ReleaseMeshResources()
@@ -911,7 +1113,7 @@ static void ShowModelDialog()
     if (g_hControlDialog == NULL)
     {
         const int dialogWidth = 620;
-        const int dialogHeight = 610;
+        const int dialogHeight = 760;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -937,6 +1139,8 @@ static void ShowModelDialog()
     SyncBaseColorUi(g_hControlDialog);
     SyncGammaUi(g_hControlDialog);
     SyncRoughnessUi(g_hControlDialog);
+    SyncMetallicUi(g_hControlDialog);
+    SyncEnvReflectionUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -1066,6 +1270,8 @@ static void Render()
     g_pEffect->SetVector("g_lightColor", &g_lightColor);
     g_pEffect->SetFloat("g_lightPower", g_lightPower);
     g_pEffect->SetFloat("g_pbrRoughness", g_pbrRoughness);
+    g_pEffect->SetFloat("g_pbrMetallic", g_pbrMetallic);
+    g_pEffect->SetFloat("g_envReflectionIntensity", g_envReflectionIntensity);
     g_pEffect->SetVector("g_pbrBaseColorFactor", &pbrBaseColor);
     g_pEffect->SetBool("g_enableSrgbToLinear", g_enableSrgbToLinear);
     g_pEffect->SetBool("g_enableLinearToSrgb", g_enableLinearToSrgb);
@@ -1118,9 +1324,15 @@ static void Render()
         wchar_t roughnessInfo[128];
         swprintf_s(roughnessInfo, L"PBR Roughness: %.2f", g_pbrRoughness);
         TextDraw(g_pFont, roughnessInfo, 10, 154, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, L"Fixed Metallic: 0.00", 10, 178, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 202, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 226, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t metallicInfo[128];
+        swprintf_s(metallicInfo, L"PBR Metallic: %.2f", g_pbrMetallic);
+        TextDraw(g_pFont, metallicInfo, 10, 178, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t envReflectionInfo[128];
+        swprintf_s(envReflectionInfo, L"Env Reflection Intensity: %.2f", g_envReflectionIntensity);
+        TextDraw(g_pFont, envReflectionInfo, 10, 202, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Env Reflection: Simple CubeMap", 10, 226, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 250, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 274, D3DCOLOR_XRGB(255, 230, 200));
 
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
@@ -1754,11 +1966,145 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"STATIC",
+                      L"PBR Metallic : 0.0 - 1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      436,
+                      300,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      456,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderMetallic = CreateWindowW(TRACKBAR_CLASSW,
+                                             L"",
+                                             WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                             52,
+                                             452,
+                                             340,
+                                             32,
+                                             hWnd,
+                                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_METALLIC)),
+                                             g_hInstance,
+                                             NULL);
+        if (hSliderMetallic != NULL)
+        {
+            SendMessageW(hSliderMetallic, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderMetallic, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderMetallic, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderMetallic, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      398,
+                      456,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"0.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      456,
+                      452,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_METALLIC)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"Env Reflection Intensity : 0.0 - 3.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      498,
+                      320,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      518,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderEnvReflection = CreateWindowW(TRACKBAR_CLASSW,
+                                                  L"",
+                                                  WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                                  52,
+                                                  514,
+                                                  340,
+                                                  32,
+                                                  hWnd,
+                                                  reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_ENV_REFLECTION_INTENSITY)),
+                                                  g_hInstance,
+                                                  NULL);
+        if (hSliderEnvReflection != NULL)
+        {
+            SendMessageW(hSliderEnvReflection, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderEnvReflection, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderEnvReflection, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderEnvReflection, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"3.0",
+                      WS_CHILD | WS_VISIBLE,
+                      398,
+                      518,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"1.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      456,
+                      514,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_ENV_REFLECTION_INTENSITY)),
+                      g_hInstance,
+                      NULL);
+
         CreateWindowW(L"BUTTON",
                       L"sRGB To Linear",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      432,
+                      564,
                       180,
                       24,
                       hWnd,
@@ -1770,7 +2116,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Linear To sRGB",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      458,
+                      590,
                       180,
                       24,
                       hWnd,
@@ -1782,6 +2128,8 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         SyncBaseColorUi(hWnd);
         SyncGammaUi(hWnd);
         SyncRoughnessUi(hWnd);
+        SyncMetallicUi(hWnd);
+        SyncEnvReflectionUi(hWnd);
         return 0;
     }
 
@@ -1811,6 +2159,20 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingRoughnessUi)
         {
             ApplyRoughnessFromUi(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_METALLIC &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingMetallicUi)
+        {
+            ApplyMetallicFromUi(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_ENV_REFLECTION_INTENSITY &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingEnvReflectionUi)
+        {
+            ApplyEnvReflectionFromUi(hWnd);
             return 0;
         }
         if ((LOWORD(wParam) == ID_CHECK_SRGB_TO_LINEAR || LOWORD(wParam) == ID_CHECK_LINEAR_TO_SRGB) &&
@@ -1850,6 +2212,18 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingRoughnessUi)
         {
             ApplyRoughnessFromSlider(hWnd);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_METALLIC) &&
+            !g_isUpdatingMetallicUi)
+        {
+            ApplyMetallicFromSlider(hWnd);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_ENV_REFLECTION_INTENSITY) &&
+            !g_isUpdatingEnvReflectionUi)
+        {
+            ApplyEnvReflectionFromSlider(hWnd);
             return 0;
         }
         break;
