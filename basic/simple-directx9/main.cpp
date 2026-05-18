@@ -34,6 +34,8 @@ static const UINT ID_EDIT_BASE_COLOR_G = 1006;
 static const UINT ID_SLIDER_BASE_COLOR_G = 1007;
 static const UINT ID_EDIT_BASE_COLOR_B = 1008;
 static const UINT ID_SLIDER_BASE_COLOR_B = 1009;
+static const UINT ID_CHECK_SRGB_TO_LINEAR = 1010;
+static const UINT ID_CHECK_LINEAR_TO_SRGB = 1011;
 
 struct MeshMaterial
 {
@@ -93,6 +95,8 @@ float               g_pbrBaseColorG = 1.0f;
 float               g_pbrBaseColorB = 1.0f;
 bool                g_isUpdatingLightPowerUi = false;
 bool                g_isUpdatingBaseColorUi = false;
+bool                g_enableSrgbToLinear = true;
+bool                g_enableLinearToSrgb = true;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -281,6 +285,26 @@ static void SyncBaseColorUi(HWND hWnd)
     }
 
     g_isUpdatingBaseColorUi = false;
+}
+
+static void SyncGammaUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hSrgbToLinear = GetDlgItem(hWnd, ID_CHECK_SRGB_TO_LINEAR);
+    if (hSrgbToLinear != NULL)
+    {
+        SendMessageW(hSrgbToLinear, BM_SETCHECK, g_enableSrgbToLinear ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+
+    HWND hLinearToSrgb = GetDlgItem(hWnd, ID_CHECK_LINEAR_TO_SRGB);
+    if (hLinearToSrgb != NULL)
+    {
+        SendMessageW(hLinearToSrgb, BM_SETCHECK, g_enableLinearToSrgb ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
 }
 
 static void ApplyLightPowerFromUi(HWND hWnd)
@@ -786,7 +810,7 @@ static void ShowModelDialog()
     if (g_hControlDialog == NULL)
     {
         const int dialogWidth = 620;
-        const int dialogHeight = 470;
+        const int dialogHeight = 540;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -810,6 +834,7 @@ static void ShowModelDialog()
     UpdateWindow(g_hControlDialog);
     SyncLightPowerUi(g_hControlDialog);
     SyncBaseColorUi(g_hControlDialog);
+    SyncGammaUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -937,6 +962,8 @@ static void Render()
     g_pEffect->SetVector("g_lightColor", &g_lightColor);
     g_pEffect->SetFloat("g_lightPower", g_lightPower);
     g_pEffect->SetVector("g_pbrBaseColorFactor", &pbrBaseColor);
+    g_pEffect->SetBool("g_enableSrgbToLinear", g_enableSrgbToLinear);
+    g_pEffect->SetBool("g_enableLinearToSrgb", g_enableLinearToSrgb);
 
     D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
                         sinf(g_cameraPitch),
@@ -983,6 +1010,8 @@ static void Render()
                    g_pbrBaseColorB);
         TextDraw(g_pFont, pbrInfo, 10, 106, D3DCOLOR_XRGB(220, 255, 220));
         TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 130, D3DCOLOR_XRGB(220, 235, 255));
+        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 154, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 178, D3DCOLOR_XRGB(255, 230, 200));
 
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
@@ -1549,8 +1578,33 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"BUTTON",
+                      L"sRGB To Linear",
+                      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                      16,
+                      394,
+                      180,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CHECK_SRGB_TO_LINEAR)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"BUTTON",
+                      L"Linear To sRGB",
+                      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                      16,
+                      420,
+                      180,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CHECK_LINEAR_TO_SRGB)),
+                      g_hInstance,
+                      NULL);
+
         SyncLightPowerUi(hWnd);
         SyncBaseColorUi(hWnd);
+        SyncGammaUi(hWnd);
         return 0;
     }
 
@@ -1573,6 +1627,20 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingBaseColorUi)
         {
             ApplyBaseColorFromUi(hWnd, LOWORD(wParam));
+            return 0;
+        }
+        if ((LOWORD(wParam) == ID_CHECK_SRGB_TO_LINEAR || LOWORD(wParam) == ID_CHECK_LINEAR_TO_SRGB) &&
+            HIWORD(wParam) == BN_CLICKED)
+        {
+            if (LOWORD(wParam) == ID_CHECK_SRGB_TO_LINEAR)
+            {
+                g_enableSrgbToLinear = (SendMessageW(reinterpret_cast<HWND>(lParam), BM_GETCHECK, 0, 0) == BST_CHECKED);
+            }
+            else
+            {
+                g_enableLinearToSrgb = (SendMessageW(reinterpret_cast<HWND>(lParam), BM_GETCHECK, 0, 0) == BST_CHECKED);
+            }
+            SyncGammaUi(hWnd);
             return 0;
         }
         break;

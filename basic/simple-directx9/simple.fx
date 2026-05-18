@@ -3,6 +3,8 @@ float4x4 g_matWorld;
 float4 g_materialDiffuse;
 float4 g_pbrBaseColorFactor;
 bool g_hasDiffuseTexture;
+bool g_enableSrgbToLinear;
+bool g_enableLinearToSrgb;
 float3 g_lightDirectionW;
 float4 g_lightColor;
 float g_lightPower;
@@ -48,11 +50,28 @@ void VertexShader1(float4 inPos    : POSITION,
     outUV = inUV;
 }
 
+float3 SrgbToLinear(float3 c)
+{
+    return pow(saturate(c), 2.2f);
+}
+
+float3 LinearToSrgb(float3 c)
+{
+    return pow(saturate(c), 1.0f / 2.2f);
+}
+
 float3 GetBaseColorTexture(float2 uv)
 {
     if (g_hasDiffuseTexture)
     {
-        return tex2D(DiffuseSamp, uv).rgb;
+        float3 textureColor = tex2D(DiffuseSamp, uv).rgb;
+
+        if (g_enableSrgbToLinear)
+        {
+            textureColor = SrgbToLinear(textureColor);
+        }
+
+        return textureColor;
     }
 
     return float3(1.0f, 1.0f, 1.0f);
@@ -82,6 +101,12 @@ float4 PbrDiffusePixelShader(float3 posWorld  : TEXCOORD0,
     float NdotL = saturate(dot(N, L));
 
     float3 diffuse = albedo * (1.0f / PI) * g_lightColor.rgb * g_lightPower * NdotL;
+
+    if (g_enableLinearToSrgb)
+    {
+        diffuse = LinearToSrgb(diffuse);
+    }
+
     return float4(diffuse, g_pbrBaseColorFactor.a);
 }
 
