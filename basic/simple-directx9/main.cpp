@@ -70,7 +70,6 @@ HWND                g_hWnd = NULL;
 HWND                g_hControlDialog = NULL;
 bool                g_bClose = false;
 bool                g_isCursorVisible = true;
-bool                g_usePbrDiffuse = true;
 
 // Camera
 D3DXVECTOR3         g_cameraPosition(0.0f, 1.5f, -6.0f);
@@ -83,6 +82,9 @@ LARGE_INTEGER       g_prevFrameCounter = {};
 const D3DXVECTOR4   g_lightDirectionW(0.35f, 0.85f, -0.40f, 0.0f);
 const D3DXVECTOR4   g_lightColor(1.0f, 1.0f, 1.0f, 1.0f);
 float               g_lightPower = 3.14159f;
+float               g_pbrBaseColorR = 1.0f;
+float               g_pbrBaseColorG = 1.0f;
+float               g_pbrBaseColorB = 1.0f;
 bool                g_isUpdatingLightPowerUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
@@ -769,11 +771,11 @@ static void Render()
     D3DXMatrixTranslation(&mW, -g_modelCenter.x, -g_modelCenter.y, -g_modelCenter.z);
 
     D3DXVECTOR3 eye = g_cameraPosition;
-    D3DXVECTOR4 eye4(eye.x, eye.y, eye.z, 1.0f);
-    g_pEffect->SetVector("g_eyePosW", &eye4);
+    D3DXVECTOR4 pbrBaseColor(g_pbrBaseColorR, g_pbrBaseColorG, g_pbrBaseColorB, 1.0f);
     g_pEffect->SetVector("g_lightDirectionW", &g_lightDirectionW);
     g_pEffect->SetVector("g_lightColor", &g_lightColor);
     g_pEffect->SetFloat("g_lightPower", g_lightPower);
+    g_pEffect->SetVector("g_pbrBaseColorFactor", &pbrBaseColor);
 
     D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
                         sinf(g_cameraPitch),
@@ -808,10 +810,17 @@ static void Render()
 
     if (SUCCEEDED(g_pd3dDevice->BeginScene()))
     {
-        TextDraw(g_pFont, L"WASD:移動  E/Q:上下  Esc:カーソル表示切替  F1:モデルダイアログ  F2:PBR Diffuse切替", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
+        TextDraw(g_pFont, L"WASD:移動  E/Q:上下  Esc:カーソル表示切替  F1:モデルダイアログ", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
         TextDraw(g_pFont, g_isCursorVisible ? L"マウスルック: OFF" : L"マウスルック: ON", 10, 34, D3DCOLOR_XRGB(255, 255, 180));
-        TextDraw(g_pFont, g_usePbrDiffuse ? L"表示モード: PBR Diffuse (Direct Light Only)" : L"表示モード: Existing Env Map", 10, 58, D3DCOLOR_XRGB(180, 255, 220));
+        TextDraw(g_pFont, L"表示モード: PBR Diffuse (Direct Light Only)", 10, 58, D3DCOLOR_XRGB(180, 255, 220));
         TextDraw(g_pFont, g_loadedMeshPath.c_str(), 10, 82, D3DCOLOR_XRGB(220, 240, 255));
+        wchar_t pbrInfo[128];
+        swprintf_s(pbrInfo,
+                   L"PBR BaseColor Factor: %.2f, %.2f, %.2f",
+                   g_pbrBaseColorR,
+                   g_pbrBaseColorG,
+                   g_pbrBaseColorB);
+        TextDraw(g_pFont, pbrInfo, 10, 106, D3DCOLOR_XRGB(220, 255, 220));
 
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
@@ -854,7 +863,7 @@ static void Render()
             g_pEffect->SetMatrix("g_matWorld", &mW);
         }
 
-        g_pEffect->SetTechnique(g_usePbrDiffuse ? "PbrDiffuseTechnique" : "Technique1");
+        g_pEffect->SetTechnique("PbrDiffuseTechnique");
 
         UINT passCount = 0;
         if (SUCCEEDED(g_pEffect->Begin(&passCount, 0)))

@@ -2,6 +2,7 @@ float4x4 g_matWorldViewProj;
 float4x4 g_matWorld;
 float3 g_eyePosW;
 float4 g_materialDiffuse;
+float4 g_pbrBaseColorFactor;
 bool g_hasDiffuseTexture;
 float3 g_lightDirectionW;
 float4 g_lightColor;
@@ -67,22 +68,40 @@ float4 PixelShader1(float3 posWorld  : TEXCOORD0,
     return float4(finalColor, g_materialDiffuse.a);
 }
 
+float3 GetBaseColorTexture(float2 uv)
+{
+    if (g_hasDiffuseTexture)
+    {
+        return tex2D(DiffuseSamp, uv).rgb;
+    }
+
+    return float3(1.0f, 1.0f, 1.0f);
+}
+
+float3 GetPbrBaseColorFactor()
+{
+    return g_pbrBaseColorFactor.rgb;
+}
+
+float3 GetPbrAlbedo(float2 uv)
+{
+    float3 baseColorFactor = GetPbrBaseColorFactor();
+    float3 baseColorTexture = GetBaseColorTexture(uv);
+    return baseColorFactor * baseColorTexture;
+}
+
 float4 PbrDiffusePixelShader(float3 posWorld  : TEXCOORD0,
                              float3 normWorld : TEXCOORD1,
                              float2 uv        : TEXCOORD2) : COLOR
 {
-    float3 albedo = g_materialDiffuse.rgb;
-    if (g_hasDiffuseTexture)
-    {
-        albedo *= tex2D(DiffuseSamp, uv).rgb;
-    }
+    float3 albedo = GetPbrAlbedo(uv);
 
     float3 N = normalize(normWorld);
     float3 L = normalize(g_lightDirectionW);
     float NdotL = saturate(dot(N, L));
 
     float3 diffuse = albedo * (1.0f / PI) * g_lightColor.rgb * g_lightPower * NdotL;
-    return float4(diffuse, g_materialDiffuse.a);
+    return float4(diffuse, g_pbrBaseColorFactor.a);
 }
 
 float4 SkyboxPixelShader(float3 posWorld : TEXCOORD0) : COLOR
