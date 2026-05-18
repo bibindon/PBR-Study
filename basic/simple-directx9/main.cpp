@@ -28,6 +28,12 @@ static const int WINDOW_SIZE_H = 1080;
 static const UINT ID_BUTTON_OPEN_MODEL = 1001;
 static const UINT ID_EDIT_LIGHT_POWER = 1002;
 static const UINT ID_SLIDER_LIGHT_POWER = 1003;
+static const UINT ID_EDIT_BASE_COLOR_R = 1004;
+static const UINT ID_SLIDER_BASE_COLOR_R = 1005;
+static const UINT ID_EDIT_BASE_COLOR_G = 1006;
+static const UINT ID_SLIDER_BASE_COLOR_G = 1007;
+static const UINT ID_EDIT_BASE_COLOR_B = 1008;
+static const UINT ID_SLIDER_BASE_COLOR_B = 1009;
 
 struct MeshMaterial
 {
@@ -86,6 +92,7 @@ float               g_pbrBaseColorR = 1.0f;
 float               g_pbrBaseColorG = 1.0f;
 float               g_pbrBaseColorB = 1.0f;
 bool                g_isUpdatingLightPowerUi = false;
+bool                g_isUpdatingBaseColorUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -162,10 +169,30 @@ static float ClampLightPower(float value)
     return value;
 }
 
+static float ClampBaseColorValue(float value)
+{
+    if (value < 0.0f)
+    {
+        return 0.0f;
+    }
+    if (value > 1.0f)
+    {
+        return 1.0f;
+    }
+    return value;
+}
+
 static std::wstring FormatLightPowerText(float value)
 {
     wchar_t buffer[32];
     swprintf_s(buffer, L"%.5f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatBaseColorText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
     return std::wstring(buffer);
 }
 
@@ -177,6 +204,16 @@ static LONG LightPowerToSliderPosition(float value)
 static float SliderPositionToLightPower(LONG sliderPosition)
 {
     return ClampLightPower(static_cast<float>(sliderPosition) / 100.0f);
+}
+
+static LONG BaseColorToSliderPosition(float value)
+{
+    return static_cast<LONG>(ClampBaseColorValue(value) * 1000.0f + 0.5f);
+}
+
+static float SliderPositionToBaseColor(LONG sliderPosition)
+{
+    return ClampBaseColorValue(static_cast<float>(sliderPosition) / 1000.0f);
 }
 
 static void SyncLightPowerUi(HWND hWnd)
@@ -202,6 +239,48 @@ static void SyncLightPowerUi(HWND hWnd)
         SendMessageW(hSlider, TBM_SETPOS, TRUE, LightPowerToSliderPosition(g_lightPower));
     }
     g_isUpdatingLightPowerUi = false;
+}
+
+static void SyncBaseColorUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    struct BaseColorControl
+    {
+        UINT editId;
+        UINT sliderId;
+        float value;
+    };
+
+    const BaseColorControl controls[] =
+    {
+        { ID_EDIT_BASE_COLOR_R, ID_SLIDER_BASE_COLOR_R, g_pbrBaseColorR },
+        { ID_EDIT_BASE_COLOR_G, ID_SLIDER_BASE_COLOR_G, g_pbrBaseColorG },
+        { ID_EDIT_BASE_COLOR_B, ID_SLIDER_BASE_COLOR_B, g_pbrBaseColorB },
+    };
+
+    g_isUpdatingBaseColorUi = true;
+
+    for (size_t i = 0; i < _countof(controls); ++i)
+    {
+        HWND hEdit = GetDlgItem(hWnd, controls[i].editId);
+        if (hEdit != NULL)
+        {
+            const std::wstring text = FormatBaseColorText(controls[i].value);
+            SetWindowTextW(hEdit, text.c_str());
+        }
+
+        HWND hSlider = GetDlgItem(hWnd, controls[i].sliderId);
+        if (hSlider != NULL)
+        {
+            SendMessageW(hSlider, TBM_SETPOS, TRUE, BaseColorToSliderPosition(controls[i].value));
+        }
+    }
+
+    g_isUpdatingBaseColorUi = false;
 }
 
 static void ApplyLightPowerFromUi(HWND hWnd)
@@ -241,6 +320,87 @@ static void ApplyLightPowerFromSlider(HWND hWnd)
     const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
     g_lightPower = SliderPositionToLightPower(sliderPosition);
     SyncLightPowerUi(hWnd);
+}
+
+static float* GetBaseColorValueFromEditId(UINT editId)
+{
+    switch (editId)
+    {
+    case ID_EDIT_BASE_COLOR_R:
+        return &g_pbrBaseColorR;
+    case ID_EDIT_BASE_COLOR_G:
+        return &g_pbrBaseColorG;
+    case ID_EDIT_BASE_COLOR_B:
+        return &g_pbrBaseColorB;
+    default:
+        return NULL;
+    }
+}
+
+static float* GetBaseColorValueFromSliderId(UINT sliderId)
+{
+    switch (sliderId)
+    {
+    case ID_SLIDER_BASE_COLOR_R:
+        return &g_pbrBaseColorR;
+    case ID_SLIDER_BASE_COLOR_G:
+        return &g_pbrBaseColorG;
+    case ID_SLIDER_BASE_COLOR_B:
+        return &g_pbrBaseColorB;
+    default:
+        return NULL;
+    }
+}
+
+static void ApplyBaseColorFromUi(HWND hWnd, UINT editId)
+{
+    float* value = GetBaseColorValueFromEditId(editId);
+    if (value == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, editId);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    *value = ClampBaseColorValue(static_cast<float>(parsed));
+    SyncBaseColorUi(hWnd);
+}
+
+static void ApplyBaseColorFromSlider(HWND hWnd, UINT sliderId)
+{
+    float* value = GetBaseColorValueFromSliderId(sliderId);
+    if (value == NULL)
+    {
+        return;
+    }
+
+    HWND hSlider = GetDlgItem(hWnd, sliderId);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    *value = SliderPositionToBaseColor(sliderPosition);
+    SyncBaseColorUi(hWnd);
 }
 
 static void ReleaseMeshResources()
@@ -625,8 +785,8 @@ static void ShowModelDialog()
 {
     if (g_hControlDialog == NULL)
     {
-        const int dialogWidth = 520;
-        const int dialogHeight = 280;
+        const int dialogWidth = 560;
+        const int dialogHeight = 420;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -649,6 +809,7 @@ static void ShowModelDialog()
     ShowWindow(g_hControlDialog, SW_SHOWNORMAL);
     UpdateWindow(g_hControlDialog);
     SyncLightPowerUi(g_hControlDialog);
+    SyncBaseColorUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -1187,7 +1348,209 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"STATIC",
+                      L"PBR Base Color R : 0.0 - 1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      224,
+                      300,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      248,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderBaseColorR = CreateWindowW(TRACKBAR_CLASSW,
+                                               L"",
+                                               WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                               52,
+                                               244,
+                                               300,
+                                               32,
+                                               hWnd,
+                                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_BASE_COLOR_R)),
+                                               g_hInstance,
+                                               NULL);
+        if (hSliderBaseColorR != NULL)
+        {
+            SendMessageW(hSliderBaseColorR, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderBaseColorR, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderBaseColorR, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderBaseColorR, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      360,
+                      248,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"1.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      410,
+                      244,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_BASE_COLOR_R)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"PBR Base Color G : 0.0 - 1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      286,
+                      300,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      310,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderBaseColorG = CreateWindowW(TRACKBAR_CLASSW,
+                                               L"",
+                                               WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                               52,
+                                               306,
+                                               300,
+                                               32,
+                                               hWnd,
+                                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_BASE_COLOR_G)),
+                                               g_hInstance,
+                                               NULL);
+        if (hSliderBaseColorG != NULL)
+        {
+            SendMessageW(hSliderBaseColorG, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderBaseColorG, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderBaseColorG, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderBaseColorG, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      360,
+                      310,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"1.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      410,
+                      306,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_BASE_COLOR_G)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"PBR Base Color B : 0.0 - 1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      348,
+                      300,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      372,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderBaseColorB = CreateWindowW(TRACKBAR_CLASSW,
+                                               L"",
+                                               WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                               52,
+                                               368,
+                                               300,
+                                               32,
+                                               hWnd,
+                                               reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_BASE_COLOR_B)),
+                                               g_hInstance,
+                                               NULL);
+        if (hSliderBaseColorB != NULL)
+        {
+            SendMessageW(hSliderBaseColorB, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderBaseColorB, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderBaseColorB, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderBaseColorB, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      360,
+                      372,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"1.000",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      410,
+                      368,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_BASE_COLOR_B)),
+                      g_hInstance,
+                      NULL);
+
         SyncLightPowerUi(hWnd);
+        SyncBaseColorUi(hWnd);
         return 0;
     }
 
@@ -1203,6 +1566,15 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             ApplyLightPowerFromUi(hWnd);
             return 0;
         }
+        if ((LOWORD(wParam) == ID_EDIT_BASE_COLOR_R ||
+             LOWORD(wParam) == ID_EDIT_BASE_COLOR_G ||
+             LOWORD(wParam) == ID_EDIT_BASE_COLOR_B) &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingBaseColorUi)
+        {
+            ApplyBaseColorFromUi(hWnd, LOWORD(wParam));
+            return 0;
+        }
         break;
     }
 
@@ -1211,6 +1583,15 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_LIGHT_POWER) && !g_isUpdatingLightPowerUi)
         {
             ApplyLightPowerFromSlider(hWnd);
+            return 0;
+        }
+        if ((reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_BASE_COLOR_R) ||
+             reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_BASE_COLOR_G) ||
+             reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_BASE_COLOR_B)) &&
+            !g_isUpdatingBaseColorUi)
+        {
+            const UINT sliderId = static_cast<UINT>(GetDlgCtrlID(reinterpret_cast<HWND>(lParam)));
+            ApplyBaseColorFromSlider(hWnd, sliderId);
             return 0;
         }
         break;
