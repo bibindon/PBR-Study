@@ -821,6 +821,7 @@ static void Render()
                    g_pbrBaseColorG,
                    g_pbrBaseColorB);
         TextDraw(g_pFont, pbrInfo, 10, 106, D3DCOLOR_XRGB(220, 255, 220));
+        TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 130, D3DCOLOR_XRGB(220, 235, 255));
 
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);

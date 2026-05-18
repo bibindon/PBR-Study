@@ -66,8 +66,9 @@ float3 GetPbrBaseColorFactor()
 float3 GetPbrAlbedo(float2 uv)
 {
     float3 baseColorFactor = GetPbrBaseColorFactor();
+    float3 materialColor = g_materialDiffuse.rgb;
     float3 baseColorTexture = GetBaseColorTexture(uv);
-    return baseColorFactor * baseColorTexture;
+    return baseColorFactor * materialColor * baseColorTexture;
 }
 
 float4 PbrDiffusePixelShader(float3 posWorld  : TEXCOORD0,
