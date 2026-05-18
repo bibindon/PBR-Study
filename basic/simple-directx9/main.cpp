@@ -36,6 +36,8 @@ static const UINT ID_EDIT_BASE_COLOR_B = 1008;
 static const UINT ID_SLIDER_BASE_COLOR_B = 1009;
 static const UINT ID_CHECK_SRGB_TO_LINEAR = 1010;
 static const UINT ID_CHECK_LINEAR_TO_SRGB = 1011;
+static const UINT ID_EDIT_ROUGHNESS = 1012;
+static const UINT ID_SLIDER_ROUGHNESS = 1013;
 
 struct MeshMaterial
 {
@@ -97,6 +99,8 @@ bool                g_isUpdatingLightPowerUi = false;
 bool                g_isUpdatingBaseColorUi = false;
 bool                g_enableSrgbToLinear = true;
 bool                g_enableLinearToSrgb = true;
+float               g_pbrRoughness = 0.5f;
+bool                g_isUpdatingRoughnessUi = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -186,6 +190,19 @@ static float ClampBaseColorValue(float value)
     return value;
 }
 
+static float ClampRoughness(float value)
+{
+    if (value < 0.04f)
+    {
+        return 0.04f;
+    }
+    if (value > 1.0f)
+    {
+        return 1.0f;
+    }
+    return value;
+}
+
 static std::wstring FormatLightPowerText(float value)
 {
     wchar_t buffer[32];
@@ -194,6 +211,13 @@ static std::wstring FormatLightPowerText(float value)
 }
 
 static std::wstring FormatBaseColorText(float value)
+{
+    wchar_t buffer[32];
+    swprintf_s(buffer, L"%.3f", value);
+    return std::wstring(buffer);
+}
+
+static std::wstring FormatRoughnessText(float value)
 {
     wchar_t buffer[32];
     swprintf_s(buffer, L"%.3f", value);
@@ -218,6 +242,18 @@ static LONG BaseColorToSliderPosition(float value)
 static float SliderPositionToBaseColor(LONG sliderPosition)
 {
     return ClampBaseColorValue(static_cast<float>(sliderPosition) / 1000.0f);
+}
+
+static LONG RoughnessToSliderPosition(float value)
+{
+    const float clamped = ClampRoughness(value);
+    return static_cast<LONG>(((clamped - 0.04f) / (1.0f - 0.04f)) * 1000.0f + 0.5f);
+}
+
+static float SliderPositionToRoughness(LONG sliderPosition)
+{
+    const float t = static_cast<float>(sliderPosition) / 1000.0f;
+    return ClampRoughness(0.04f + t * (1.0f - 0.04f));
 }
 
 static void SyncLightPowerUi(HWND hWnd)
@@ -305,6 +341,32 @@ static void SyncGammaUi(HWND hWnd)
     {
         SendMessageW(hLinearToSrgb, BM_SETCHECK, g_enableLinearToSrgb ? BST_CHECKED : BST_UNCHECKED, 0);
     }
+}
+
+static void SyncRoughnessUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ROUGHNESS);
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ROUGHNESS);
+
+    g_isUpdatingRoughnessUi = true;
+
+    if (hEdit != NULL)
+    {
+        const std::wstring text = FormatRoughnessText(g_pbrRoughness);
+        SetWindowTextW(hEdit, text.c_str());
+    }
+
+    if (hSlider != NULL)
+    {
+        SendMessageW(hSlider, TBM_SETPOS, TRUE, RoughnessToSliderPosition(g_pbrRoughness));
+    }
+
+    g_isUpdatingRoughnessUi = false;
 }
 
 static void ApplyLightPowerFromUi(HWND hWnd)
@@ -425,6 +487,45 @@ static void ApplyBaseColorFromSlider(HWND hWnd, UINT sliderId)
     const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
     *value = SliderPositionToBaseColor(sliderPosition);
     SyncBaseColorUi(hWnd);
+}
+
+static void ApplyRoughnessFromUi(HWND hWnd)
+{
+    HWND hEdit = GetDlgItem(hWnd, ID_EDIT_ROUGHNESS);
+    if (hEdit == NULL)
+    {
+        return;
+    }
+
+    wchar_t buffer[64];
+    GetWindowTextW(hEdit, buffer, _countof(buffer));
+    if (buffer[0] == L'\0')
+    {
+        return;
+    }
+
+    wchar_t* endPtr = NULL;
+    const double parsed = wcstod(buffer, &endPtr);
+    if (endPtr == buffer)
+    {
+        return;
+    }
+
+    g_pbrRoughness = ClampRoughness(static_cast<float>(parsed));
+    SyncRoughnessUi(hWnd);
+}
+
+static void ApplyRoughnessFromSlider(HWND hWnd)
+{
+    HWND hSlider = GetDlgItem(hWnd, ID_SLIDER_ROUGHNESS);
+    if (hSlider == NULL)
+    {
+        return;
+    }
+
+    const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
+    g_pbrRoughness = SliderPositionToRoughness(sliderPosition);
+    SyncRoughnessUi(hWnd);
 }
 
 static void ReleaseMeshResources()
@@ -810,7 +911,7 @@ static void ShowModelDialog()
     if (g_hControlDialog == NULL)
     {
         const int dialogWidth = 620;
-        const int dialogHeight = 540;
+        const int dialogHeight = 610;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
 
@@ -835,6 +936,7 @@ static void ShowModelDialog()
     SyncLightPowerUi(g_hControlDialog);
     SyncBaseColorUi(g_hControlDialog);
     SyncGammaUi(g_hControlDialog);
+    SyncRoughnessUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -963,6 +1065,7 @@ static void Render()
     g_pEffect->SetVector("g_lightDirectionW", &g_lightDirectionW);
     g_pEffect->SetVector("g_lightColor", &g_lightColor);
     g_pEffect->SetFloat("g_lightPower", g_lightPower);
+    g_pEffect->SetFloat("g_pbrRoughness", g_pbrRoughness);
     g_pEffect->SetVector("g_pbrBaseColorFactor", &pbrBaseColor);
     g_pEffect->SetBool("g_enableSrgbToLinear", g_enableSrgbToLinear);
     g_pEffect->SetBool("g_enableLinearToSrgb", g_enableLinearToSrgb);
@@ -1012,7 +1115,9 @@ static void Render()
                    g_pbrBaseColorB);
         TextDraw(g_pFont, pbrInfo, 10, 106, D3DCOLOR_XRGB(220, 255, 220));
         TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 130, D3DCOLOR_XRGB(220, 235, 255));
-        TextDraw(g_pFont, L"Fixed Roughness: 0.50", 10, 154, D3DCOLOR_XRGB(255, 230, 200));
+        wchar_t roughnessInfo[128];
+        swprintf_s(roughnessInfo, L"PBR Roughness: %.2f", g_pbrRoughness);
+        TextDraw(g_pFont, roughnessInfo, 10, 154, D3DCOLOR_XRGB(255, 230, 200));
         TextDraw(g_pFont, L"Fixed Metallic: 0.00", 10, 178, D3DCOLOR_XRGB(255, 230, 200));
         TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 202, D3DCOLOR_XRGB(255, 230, 200));
         TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 226, D3DCOLOR_XRGB(255, 230, 200));
@@ -1582,11 +1687,78 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"STATIC",
+                      L"PBR Roughness : 0.04 - 1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      374,
+                      300,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"0.04",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      394,
+                      36,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        HWND hSliderRoughness = CreateWindowW(TRACKBAR_CLASSW,
+                                              L"",
+                                              WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                              52,
+                                              390,
+                                              340,
+                                              32,
+                                              hWnd,
+                                              reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_SLIDER_ROUGHNESS)),
+                                              g_hInstance,
+                                              NULL);
+        if (hSliderRoughness != NULL)
+        {
+            SendMessageW(hSliderRoughness, TBM_SETRANGE, TRUE, MAKELONG(0, 1000));
+            SendMessageW(hSliderRoughness, TBM_SETTICFREQ, 100, 0);
+            SendMessageW(hSliderRoughness, TBM_SETPAGESIZE, 0, 50);
+            SendMessageW(hSliderRoughness, TBM_SETLINESIZE, 0, 1);
+        }
+
+        CreateWindowW(L"STATIC",
+                      L"1.0",
+                      WS_CHILD | WS_VISIBLE,
+                      398,
+                      394,
+                      30,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"EDIT",
+                      L"0.500",
+                      WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                      456,
+                      390,
+                      84,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_EDIT_ROUGHNESS)),
+                      g_hInstance,
+                      NULL);
+
         CreateWindowW(L"BUTTON",
                       L"sRGB To Linear",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      394,
+                      432,
                       180,
                       24,
                       hWnd,
@@ -1598,7 +1770,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       L"Linear To sRGB",
                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                       16,
-                      420,
+                      458,
                       180,
                       24,
                       hWnd,
@@ -1609,6 +1781,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         SyncLightPowerUi(hWnd);
         SyncBaseColorUi(hWnd);
         SyncGammaUi(hWnd);
+        SyncRoughnessUi(hWnd);
         return 0;
     }
 
@@ -1631,6 +1804,13 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             !g_isUpdatingBaseColorUi)
         {
             ApplyBaseColorFromUi(hWnd, LOWORD(wParam));
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_EDIT_ROUGHNESS &&
+            HIWORD(wParam) == EN_CHANGE &&
+            !g_isUpdatingRoughnessUi)
+        {
+            ApplyRoughnessFromUi(hWnd);
             return 0;
         }
         if ((LOWORD(wParam) == ID_CHECK_SRGB_TO_LINEAR || LOWORD(wParam) == ID_CHECK_LINEAR_TO_SRGB) &&
@@ -1664,6 +1844,12 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             const UINT sliderId = static_cast<UINT>(GetDlgCtrlID(reinterpret_cast<HWND>(lParam)));
             ApplyBaseColorFromSlider(hWnd, sliderId);
+            return 0;
+        }
+        if (reinterpret_cast<HWND>(lParam) == GetDlgItem(hWnd, ID_SLIDER_ROUGHNESS) &&
+            !g_isUpdatingRoughnessUi)
+        {
+            ApplyRoughnessFromSlider(hWnd);
             return 0;
         }
         break;

@@ -9,6 +9,7 @@ bool g_enableLinearToSrgb;
 float3 g_lightDirectionW;
 float4 g_lightColor;
 float g_lightPower;
+float g_pbrRoughness;
 
 #define PI 3.14159265f
 
@@ -142,7 +143,7 @@ float4 PbrDirectLightPixelShader(float3 posWorld  : TEXCOORD0,
     float NdotL = saturate(dot(N, L));
     float NdotV = saturate(dot(N, V));
 
-    float roughness = 0.5f;
+    float roughness = max(g_pbrRoughness, 0.04f);
     float metallic = 0.0f;
 
     float3 F0 = float3(0.04f, 0.04f, 0.04f);
