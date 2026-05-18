@@ -1,6 +1,5 @@
 float4x4 g_matWorldViewProj;
 float4x4 g_matWorld;
-float3 g_eyePosW;
 float4 g_materialDiffuse;
 float4 g_pbrBaseColorFactor;
 bool g_hasDiffuseTexture;
@@ -49,25 +48,6 @@ void VertexShader1(float4 inPos    : POSITION,
     outUV = inUV;
 }
 
-float4 PixelShader1(float3 posWorld  : TEXCOORD0,
-                    float3 normWorld : TEXCOORD1,
-                    float2 uv        : TEXCOORD2) : COLOR
-{
-    float3 viewWorld = normalize(posWorld - g_eyePosW);
-    float3 reflectWorld = reflect(viewWorld, normalize(normWorld));
-
-    float3 baseColor = g_materialDiffuse.rgb;
-    if (g_hasDiffuseTexture)
-    {
-        baseColor *= tex2D(DiffuseSamp, uv).rgb;
-    }
-
-    float3 reflectionColor = texCUBE(EnvSamp, reflectWorld).rgb;
-    float3 finalColor = saturate(baseColor * 0.75f + reflectionColor * 0.25f);
-
-    return float4(finalColor, g_materialDiffuse.a);
-}
-
 float3 GetBaseColorTexture(float2 uv)
 {
     if (g_hasDiffuseTexture)
@@ -108,15 +88,6 @@ float4 SkyboxPixelShader(float3 posWorld : TEXCOORD0) : COLOR
 {
     float3 sampleDir = normalize(posWorld);
     return float4(texCUBE(EnvSamp, sampleDir).rgb, 1.0f);
-}
-
-technique Technique1
-{
-    pass P0
-    {
-        VertexShader = compile vs_3_0 VertexShader1();
-        PixelShader = compile ps_3_0 PixelShader1();
-    }
 }
 
 technique SkyboxTechnique

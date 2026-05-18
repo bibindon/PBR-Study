@@ -1050,11 +1050,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 ShowModelDialog();
                 return 0;
             }
-            if (wParam == VK_F2)
-            {
-                g_usePbrDiffuse = !g_usePbrDiffuse;
-                return 0;
-            }
         }
         break;
     }
@@ -1180,7 +1175,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       NULL);
 
         CreateWindowW(L"STATIC",
-                      L"PBR Diffuseモード(F2)で使用します。",
+                      L"PBR Diffuse表示で使用します。",
                       WS_CHILD | WS_VISIBLE,
                       16,
                       188,
