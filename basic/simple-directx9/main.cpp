@@ -1,4 +1,5 @@
 ﻿#pragma comment( lib, "d3d9.lib" )
+#pragma comment( lib, "comdlg32.lib" )
 #if defined(DEBUG) || defined(_DEBUG)
 #pragma comment( lib, "d3dx9d.lib" )
 #else
@@ -7,17 +8,35 @@
 
 #include <d3d9.h>
 #include <d3dx9.h>
+#include <commdlg.h>
 #include <tchar.h>
 #include <cassert>
-#include <vector>
+#include <cmath>
 #include <string>
+#include <vector>
 
 #define SAFE_RELEASE(p) { if (p) { (p)->Release(); (p) = NULL; } }
 
 static const int WINDOW_SIZE_W = 1600;
 static const int WINDOW_SIZE_H = 900;
+static const UINT ID_BUTTON_OPEN_MODEL = 1001;
+
+struct MeshMaterial
+{
+    D3DMATERIAL9 material;
+    LPDIRECT3DTEXTURE9 texture;
+    bool hasTexture;
+
+    MeshMaterial()
+        : texture(NULL)
+        , hasTexture(false)
+    {
+        ZeroMemory(&material, sizeof(material));
+    }
+};
 
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+LRESULT CALLBACK ControlDialogProc(HWND, UINT, WPARAM, LPARAM);
 
 // D3D
 LPDIRECT3D9         g_pD3D = NULL;
@@ -28,25 +47,316 @@ LPD3DXFONT          g_pFont = NULL;
 // Mesh
 LPD3DXMESH          g_pMesh = NULL;
 DWORD               g_dwNumMaterials = 0;
-std::vector<LPDIRECT3DTEXTURE9> g_pTextures;
+std::vector<MeshMaterial> g_materials;
+std::wstring        g_loadedMeshPath;
+D3DXVECTOR3         g_modelCenter(0.0f, 0.0f, 0.0f);
+float               g_modelRadius = 1.0f;
 
 // Env Cube
 LPDIRECT3DCUBETEXTURE9  g_pEnvCube = NULL;
 
 // App
-HWND  g_hWnd = NULL;
-bool  g_bClose = false;
+HINSTANCE           g_hInstance = NULL;
+HWND                g_hWnd = NULL;
+HWND                g_hControlDialog = NULL;
+bool                g_bClose = false;
+bool                g_isCursorVisible = true;
+
+// Camera
+D3DXVECTOR3         g_cameraPosition(0.0f, 1.5f, -6.0f);
+float               g_cameraYaw = 0.0f;
+float               g_cameraPitch = 0.0f;
+float               g_cameraMoveSpeed = 6.0f;
+float               g_mouseSensitivity = 0.0035f;
+LARGE_INTEGER       g_perfFrequency = {};
+LARGE_INTEGER       g_prevFrameCounter = {};
+
+static std::wstring GetDirectoryPath(const std::wstring& path)
+{
+    const std::wstring::size_type pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos)
+    {
+        return L".";
+    }
+
+    return path.substr(0, pos);
+}
+
+static std::wstring JoinPath(const std::wstring& dir, const std::wstring& fileName)
+{
+    if (dir.empty())
+    {
+        return fileName;
+    }
+
+    const wchar_t last = dir[dir.size() - 1];
+    if (last == L'\\' || last == L'/')
+    {
+        return dir + fileName;
+    }
+
+    return dir + L"\\" + fileName;
+}
+
+static std::wstring AnsiToWide(const char* text)
+{
+    if (text == NULL || text[0] == '\0')
+    {
+        return std::wstring();
+    }
+
+    const int length = MultiByteToWideChar(CP_ACP, 0, text, -1, NULL, 0);
+    if (length <= 0)
+    {
+        return std::wstring();
+    }
+
+    std::vector<wchar_t> buffer(static_cast<size_t>(length), L'\0');
+    MultiByteToWideChar(CP_ACP, 0, text, -1, &buffer[0], length);
+    return std::wstring(&buffer[0]);
+}
+
+static void ReleaseMeshResources()
+{
+    for (size_t i = 0; i < g_materials.size(); ++i)
+    {
+        SAFE_RELEASE(g_materials[i].texture);
+    }
+    g_materials.clear();
+    g_dwNumMaterials = 0;
+    SAFE_RELEASE(g_pMesh);
+}
+
+static void SetCursorVisible(bool visible)
+{
+    if (visible == g_isCursorVisible)
+    {
+        return;
+    }
+
+    if (visible)
+    {
+        while (ShowCursor(TRUE) < 0)
+        {
+        }
+        ReleaseCapture();
+        ClipCursor(NULL);
+    }
+    else
+    {
+        while (ShowCursor(FALSE) >= 0)
+        {
+        }
+        SetCapture(g_hWnd);
+    }
+
+    g_isCursorVisible = visible;
+}
+
+static void CenterCursorInClient()
+{
+    if (g_hWnd == NULL)
+    {
+        return;
+    }
+
+    RECT rc;
+    GetClientRect(g_hWnd, &rc);
+
+    POINT pt;
+    pt.x = (rc.left + rc.right) / 2;
+    pt.y = (rc.top + rc.bottom) / 2;
+    ClientToScreen(g_hWnd, &pt);
+    SetCursorPos(pt.x, pt.y);
+}
+
+static void ToggleCursorVisible()
+{
+    SetCursorVisible(!g_isCursorVisible);
+    if (!g_isCursorVisible)
+    {
+        CenterCursorInClient();
+    }
+}
+
+static void ResetCameraForModel()
+{
+    const float safeRadius = (g_modelRadius > 0.001f) ? g_modelRadius : 1.0f;
+    g_cameraPosition = D3DXVECTOR3(0.0f, safeRadius * 0.35f, -safeRadius * 3.0f);
+    g_cameraYaw = 0.0f;
+    g_cameraPitch = 0.0f;
+
+    if (!g_isCursorVisible)
+    {
+        CenterCursorInClient();
+    }
+}
+
+static void UpdateWindowTitle()
+{
+    std::wstring title = L"PBR Study - ";
+    title += g_loadedMeshPath.empty() ? L"(no mesh)" : g_loadedMeshPath;
+    SetWindowTextW(g_hWnd, title.c_str());
+}
+
+static bool LoadMeshFromFile(const std::wstring& filePath)
+{
+    LPD3DXBUFFER adjacencyBuffer = NULL;
+    LPD3DXBUFFER materialBuffer = NULL;
+    LPD3DXMESH newMesh = NULL;
+    DWORD materialCount = 0;
+
+    HRESULT hr = D3DXLoadMeshFromXW(filePath.c_str(),
+                                    D3DXMESH_MANAGED,
+                                    g_pd3dDevice,
+                                    &adjacencyBuffer,
+                                    &materialBuffer,
+                                    NULL,
+                                    &materialCount,
+                                    &newMesh);
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(adjacencyBuffer);
+        SAFE_RELEASE(materialBuffer);
+        SAFE_RELEASE(newMesh);
+        return false;
+    }
+
+    if (adjacencyBuffer != NULL)
+    {
+        DWORD* adjacency = static_cast<DWORD*>(adjacencyBuffer->GetBufferPointer());
+        D3DXComputeNormals(newMesh, adjacency);
+    }
+
+    std::vector<MeshMaterial> newMaterials;
+    if (materialBuffer != NULL && materialCount > 0)
+    {
+        const D3DXMATERIAL* d3dxMaterials = static_cast<const D3DXMATERIAL*>(materialBuffer->GetBufferPointer());
+        const std::wstring baseDirectory = GetDirectoryPath(filePath);
+        newMaterials.resize(materialCount);
+
+        for (DWORD i = 0; i < materialCount; ++i)
+        {
+            newMaterials[i].material = d3dxMaterials[i].MatD3D;
+            newMaterials[i].material.Ambient = newMaterials[i].material.Diffuse;
+
+            if (d3dxMaterials[i].pTextureFilename != NULL && d3dxMaterials[i].pTextureFilename[0] != '\0')
+            {
+                const std::wstring textureName = AnsiToWide(d3dxMaterials[i].pTextureFilename);
+                const std::wstring texturePath = JoinPath(baseDirectory, textureName);
+                LPDIRECT3DTEXTURE9 texture = NULL;
+
+                hr = D3DXCreateTextureFromFileW(g_pd3dDevice, texturePath.c_str(), &texture);
+                if (FAILED(hr))
+                {
+                    hr = D3DXCreateTextureFromFileW(g_pd3dDevice, textureName.c_str(), &texture);
+                }
+
+                if (SUCCEEDED(hr))
+                {
+                    newMaterials[i].texture = texture;
+                    newMaterials[i].hasTexture = true;
+                }
+            }
+        }
+    }
+    else
+    {
+        MeshMaterial material;
+        material.material.Diffuse.r = 0.8f;
+        material.material.Diffuse.g = 0.8f;
+        material.material.Diffuse.b = 0.8f;
+        material.material.Diffuse.a = 1.0f;
+        material.material.Ambient = material.material.Diffuse;
+        newMaterials.push_back(material);
+        materialCount = 1;
+    }
+
+    BYTE* vertices = NULL;
+    hr = newMesh->LockVertexBuffer(D3DLOCK_READONLY, reinterpret_cast<void**>(&vertices));
+    if (SUCCEEDED(hr))
+    {
+        D3DXComputeBoundingSphere(reinterpret_cast<const D3DXVECTOR3*>(vertices),
+                                  newMesh->GetNumVertices(),
+                                  newMesh->GetNumBytesPerVertex(),
+                                  &g_modelCenter,
+                                  &g_modelRadius);
+        newMesh->UnlockVertexBuffer();
+    }
+    else
+    {
+        g_modelCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+        g_modelRadius = 1.0f;
+    }
+
+    ReleaseMeshResources();
+    g_pMesh = newMesh;
+    g_dwNumMaterials = materialCount;
+    g_materials.swap(newMaterials);
+    g_loadedMeshPath = filePath;
+    ResetCameraForModel();
+    UpdateWindowTitle();
+
+    SAFE_RELEASE(adjacencyBuffer);
+    SAFE_RELEASE(materialBuffer);
+    return true;
+}
+
+static bool LoadEffectAndAssets()
+{
+    HRESULT hr = D3DXCreateEffectFromFileW(g_pd3dDevice,
+                                           L"simple.fx",
+                                           NULL,
+                                           NULL,
+                                           D3DXSHADER_DEBUG,
+                                           NULL,
+                                           &g_pEffect,
+                                           NULL);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    hr = D3DXCreateCubeTextureFromFileW(g_pd3dDevice,
+                                        L"Texture1.dds",
+                                        &g_pEnvCube);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    hr = D3DXCreateFontW(g_pd3dDevice,
+                         18,
+                         0,
+                         FW_NORMAL,
+                         1,
+                         FALSE,
+                         DEFAULT_CHARSET,
+                         OUT_DEFAULT_PRECIS,
+                         DEFAULT_QUALITY,
+                         DEFAULT_PITCH | FF_DONTCARE,
+                         L"BIZ UDゴシック",
+                         &g_pFont);
+    if (FAILED(hr))
+    {
+        return false;
+    }
+
+    return LoadMeshFromFile(L"sphere.x");
+}
 
 static void Cleanup()
 {
-    for (size_t i = 0; i < g_pTextures.size(); ++i)
-    {
-        SAFE_RELEASE(g_pTextures[i]);
-    }
-    g_pTextures.clear();
+    SetCursorVisible(true);
 
+    if (g_hControlDialog != NULL)
+    {
+        DestroyWindow(g_hControlDialog);
+        g_hControlDialog = NULL;
+    }
+
+    ReleaseMeshResources();
     SAFE_RELEASE(g_pEnvCube);
-    SAFE_RELEASE(g_pMesh);
     SAFE_RELEASE(g_pFont);
     SAFE_RELEASE(g_pEffect);
     SAFE_RELEASE(g_pd3dDevice);
@@ -99,97 +409,6 @@ static bool InitD3D(HWND hWnd)
     return true;
 }
 
-static bool LoadMeshAndEffect()
-{
-    // Mesh
-    LPD3DXBUFFER pAdj = NULL;
-    LPD3DXBUFFER pMtl = NULL;
-    DWORD        numMaterials = 0;
-
-    HRESULT hr = D3DXLoadMeshFromX(
-                                   //_T("cube.x"),
-                                   _T("sphere.x"),
-                                   D3DXMESH_MANAGED,
-                                   g_pd3dDevice,
-                                   &pAdj,
-                                   &pMtl,
-                                   NULL,
-                                   &numMaterials,
-                                   &g_pMesh);
-
-    assert(hr == S_OK);
-
-    g_dwNumMaterials = numMaterials;
-
-    // 隣接情報を計算して法線を再計算
-    // なめらかになる
-    // なめらかにしたくないときは計算してはいけない
-    if (true)
-    {
-        // 隣接情報を使って法線を再計算（スムージング）
-        DWORD* pAdjData = nullptr;
-        pAdjData = (DWORD*)pAdj->GetBufferPointer();
-
-        hr = D3DXComputeNormals(g_pMesh, pAdjData);
-    }
-    SAFE_RELEASE(pAdj);
-
-    if (pMtl != NULL)
-    {
-        D3DXMATERIAL* pMaterials = (D3DXMATERIAL*)pMtl->GetBufferPointer();
-
-        g_pTextures.resize(g_dwNumMaterials, NULL);
-
-        for (DWORD i = 0; i < g_dwNumMaterials; ++i)
-        {
-            if (pMaterials[i].pTextureFilename != NULL &&
-                strlen(pMaterials[i].pTextureFilename) > 0)
-            {
-                const char* s = pMaterials[i].pTextureFilename;
-                D3DXCreateTextureFromFileA(g_pd3dDevice, s, &g_pTextures[i]);
-            }
-        }
-    }
-
-    SAFE_RELEASE(pMtl);
-
-    hr = D3DXCreateEffectFromFile(g_pd3dDevice,
-                                  L"simple.fx",
-                                  NULL,
-                                  NULL,
-                                  D3DXSHADER_DEBUG,
-                                  NULL,
-                                  &g_pEffect,
-                                  NULL);
-
-    assert(hr == S_OK);
-
-    // Env Cube
-    hr = D3DXCreateCubeTextureFromFile(g_pd3dDevice,
-                                       L"Texture1.dds",
-                                       &g_pEnvCube);
-
-    assert(hr == S_OK);
-
-    // Font
-    hr = D3DXCreateFont(g_pd3dDevice,
-                        18,
-                        0,
-                        FW_NORMAL,
-                        1,
-                        FALSE,
-                        DEFAULT_CHARSET,
-                        OUT_DEFAULT_PRECIS,
-                        DEFAULT_QUALITY,
-                        DEFAULT_PITCH | FF_DONTCARE,
-                        L"BIZ UDゴシック",
-                        &g_pFont);
-
-    assert(hr == S_OK);
-
-    return true;
-}
-
 static void TextDraw(ID3DXFont* font, const TCHAR* text, int x, int y, D3DCOLOR color)
 {
     if (font == NULL)
@@ -207,32 +426,177 @@ static void TextDraw(ID3DXFont* font, const TCHAR* text, int x, int y, D3DCOLOR 
                    color);
 }
 
+static void ShowModelDialog()
+{
+    if (g_hControlDialog == NULL)
+    {
+        const int dialogWidth = 340;
+        const int dialogHeight = 150;
+        RECT rcMain;
+        GetWindowRect(g_hWnd, &rcMain);
+
+        g_hControlDialog = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_DLGMODALFRAME,
+                                           L"ModelControlDialog",
+                                           L"Model Loader",
+                                           WS_CAPTION | WS_SYSMENU | WS_POPUP,
+                                           rcMain.left + 60,
+                                           rcMain.top + 60,
+                                           dialogWidth,
+                                           dialogHeight,
+                                           g_hWnd,
+                                           NULL,
+                                           g_hInstance,
+                                           NULL);
+        assert(g_hControlDialog != NULL);
+    }
+
+    SetCursorVisible(true);
+    ShowWindow(g_hControlDialog, SW_SHOWNORMAL);
+    UpdateWindow(g_hControlDialog);
+    SetForegroundWindow(g_hControlDialog);
+}
+
+static void OpenModelFileDialog()
+{
+    wchar_t filePath[MAX_PATH] = L"";
+
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (g_hControlDialog != NULL) ? g_hControlDialog : g_hWnd;
+    ofn.lpstrFilter = L"X Files (*.x)\0*.x\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = filePath;
+    ofn.nMaxFile = _countof(filePath);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle = L"Xファイルを選択";
+
+    if (!GetOpenFileNameW(&ofn))
+    {
+        return;
+    }
+
+    if (!LoadMeshFromFile(filePath))
+    {
+        MessageBoxW(g_hWnd,
+                    L"Xファイルの読み込みに失敗しました。",
+                    L"読み込みエラー",
+                    MB_ICONERROR | MB_OK);
+    }
+}
+
+static void UpdateCamera(float deltaSeconds)
+{
+    if (deltaSeconds <= 0.0f)
+    {
+        return;
+    }
+
+    D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
+                        sinf(g_cameraPitch),
+                        cosf(g_cameraPitch) * cosf(g_cameraYaw));
+    D3DXVec3Normalize(&forward, &forward);
+
+    const D3DXVECTOR3 worldUp(0.0f, 1.0f, 0.0f);
+    D3DXVECTOR3 right;
+    D3DXVec3Cross(&right, &worldUp, &forward);
+    D3DXVec3Normalize(&right, &right);
+
+    D3DXVECTOR3 up;
+    D3DXVec3Cross(&up, &forward, &right);
+    D3DXVec3Normalize(&up, &up);
+
+    const float moveAmount = g_cameraMoveSpeed * deltaSeconds;
+    if (GetAsyncKeyState('W') & 0x8000)
+    {
+        g_cameraPosition += forward * moveAmount;
+    }
+    if (GetAsyncKeyState('S') & 0x8000)
+    {
+        g_cameraPosition -= forward * moveAmount;
+    }
+    if (GetAsyncKeyState('D') & 0x8000)
+    {
+        g_cameraPosition += right * moveAmount;
+    }
+    if (GetAsyncKeyState('A') & 0x8000)
+    {
+        g_cameraPosition -= right * moveAmount;
+    }
+    if (GetAsyncKeyState('E') & 0x8000)
+    {
+        g_cameraPosition.y += moveAmount;
+    }
+    if (GetAsyncKeyState('Q') & 0x8000)
+    {
+        g_cameraPosition.y -= moveAmount;
+    }
+
+    if (!g_isCursorVisible)
+    {
+        RECT rc;
+        GetClientRect(g_hWnd, &rc);
+
+        POINT center;
+        center.x = (rc.left + rc.right) / 2;
+        center.y = (rc.top + rc.bottom) / 2;
+        ClientToScreen(g_hWnd, &center);
+
+        POINT cursorPos;
+        GetCursorPos(&cursorPos);
+
+        const LONG deltaX = cursorPos.x - center.x;
+        const LONG deltaY = cursorPos.y - center.y;
+
+        g_cameraYaw += static_cast<float>(deltaX) * g_mouseSensitivity;
+        g_cameraPitch -= static_cast<float>(deltaY) * g_mouseSensitivity;
+
+        const float pitchLimit = D3DXToRadian(89.0f);
+        if (g_cameraPitch > pitchLimit)
+        {
+            g_cameraPitch = pitchLimit;
+        }
+        if (g_cameraPitch < -pitchLimit)
+        {
+            g_cameraPitch = -pitchLimit;
+        }
+
+        CenterCursorInClient();
+    }
+}
+
 static void Render()
 {
-    static float t = 0.0f;
-    t += 0.03f;
-
-    // 行列
     D3DXMATRIX mW, mV, mP, mWVP;
-    D3DXMatrixIdentity(&mW);
+    D3DXMatrixTranslation(&mW, -g_modelCenter.x, -g_modelCenter.y, -g_modelCenter.z);
 
-    //D3DXVECTOR3 eye(4.0f * sinf(t), 4.f * sinf(t), -4.0f * cosf(t));
-    D3DXVECTOR3 eye(4.0f * sinf(t), 2.f, -4.0f * cosf(t));
+    D3DXVECTOR3 eye = g_cameraPosition;
     D3DXVECTOR4 eye4(eye.x, eye.y, eye.z, 1.0f);
     g_pEffect->SetVector("g_eyePosW", &eye4);
-    D3DXVECTOR3 at(0.0f, 0.0f, 0.0f);
-    D3DXVECTOR3 up(0.0f, 1.0f, 0.0f);
 
+    D3DXVECTOR3 forward(cosf(g_cameraPitch) * sinf(g_cameraYaw),
+                        sinf(g_cameraPitch),
+                        cosf(g_cameraPitch) * cosf(g_cameraYaw));
+    D3DXVec3Normalize(&forward, &forward);
+
+    D3DXVECTOR3 worldUp(0.0f, 1.0f, 0.0f);
+    D3DXVECTOR3 right;
+    D3DXVec3Cross(&right, &worldUp, &forward);
+    D3DXVec3Normalize(&right, &right);
+
+    D3DXVECTOR3 up;
+    D3DXVec3Cross(&up, &forward, &right);
+    D3DXVec3Normalize(&up, &up);
+
+    const D3DXVECTOR3 at = eye + forward;
     D3DXMatrixLookAtLH(&mV, &eye, &at, &up);
     D3DXMatrixPerspectiveFovLH(&mP,
                                D3DXToRadian(45.0f),
-                               (float)WINDOW_SIZE_W / (float)WINDOW_SIZE_H,
-                               1.0f,
+                               static_cast<float>(WINDOW_SIZE_W) / static_cast<float>(WINDOW_SIZE_H),
+                               0.1f,
                                1000.0f);
 
     mWVP = mW * mV * mP;
 
-    // クリア
     g_pd3dDevice->Clear(0,
                         NULL,
                         D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER,
@@ -242,29 +606,40 @@ static void Render()
 
     if (SUCCEEDED(g_pd3dDevice->BeginScene()))
     {
-        // テキスト
-        TextDraw(g_pFont, L"環境マッピング", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
+        TextDraw(g_pFont, L"WASD:移動  E/Q:上下  Esc:カーソル表示切替  F1:モデルダイアログ", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
+        TextDraw(g_pFont, g_isCursorVisible ? L"マウスルック: OFF" : L"マウスルック: ON", 10, 34, D3DCOLOR_XRGB(255, 255, 180));
+        TextDraw(g_pFont, g_loadedMeshPath.c_str(), 10, 58, D3DCOLOR_XRGB(220, 240, 255));
 
-        // エフェクト定数
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
         g_pEffect->SetTexture("EnvMap", g_pEnvCube);
-
-        // 描画
         g_pEffect->SetTechnique("Technique1");
 
-        UINT nPass = 0;
-        if (SUCCEEDED(g_pEffect->Begin(&nPass, 0)))
+        UINT passCount = 0;
+        if (SUCCEEDED(g_pEffect->Begin(&passCount, 0)))
         {
-            if (SUCCEEDED(g_pEffect->BeginPass(0)))
+            for (UINT passIndex = 0; passIndex < passCount; ++passIndex)
             {
-                for (DWORD i = 0; i < g_dwNumMaterials; ++i)
+                if (SUCCEEDED(g_pEffect->BeginPass(passIndex)))
                 {
-                    g_pMesh->DrawSubset(i);
-                }
+                    for (DWORD materialIndex = 0; materialIndex < g_dwNumMaterials; ++materialIndex)
+                    {
+                        const MeshMaterial& material = g_materials[materialIndex];
+                        D3DXVECTOR4 diffuse(material.material.Diffuse.r,
+                                            material.material.Diffuse.g,
+                                            material.material.Diffuse.b,
+                                            material.material.Diffuse.a);
+                        g_pEffect->SetVector("g_materialDiffuse", &diffuse);
+                        g_pEffect->SetBool("g_hasDiffuseTexture", material.hasTexture);
+                        g_pEffect->SetTexture("DiffuseMap", material.texture);
+                        g_pEffect->CommitChanges();
+                        g_pMesh->DrawSubset(materialIndex);
+                    }
 
-                g_pEffect->EndPass();
+                    g_pEffect->EndPass();
+                }
             }
+
             g_pEffect->End();
         }
 
@@ -281,10 +656,14 @@ static bool InitAll(HWND hWnd)
         return false;
     }
 
-    if (!LoadMeshAndEffect())
+    if (!LoadEffectAndAssets())
     {
         return false;
     }
+
+    QueryPerformanceFrequency(&g_perfFrequency);
+    QueryPerformanceCounter(&g_prevFrameCounter);
+    UpdateWindowTitle();
     return true;
 }
 
@@ -298,44 +677,53 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
                     _In_ LPWSTR lpCmdLine,
                     _In_ int nShowCmd)
 {
-    WNDCLASSEX wc;
-    ZeroMemory(&wc, sizeof(wc));
-    wc.cbSize = sizeof(wc);
-    wc.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
-    wc.lpfnWndProc = WndProc;
-    wc.cbClsExtra = 0;
-    wc.cbWndExtra = 0;
-    wc.hInstance = GetModuleHandle(NULL);
-    wc.hIcon = NULL;
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc.lpszMenuName = NULL;
-    wc.lpszClassName = L"Window1";
-    wc.hIconSm = NULL;
+    g_hInstance = hInstance;
 
-    ATOM atom = RegisterClassEx(&wc);
-    assert(atom != 0);
+    WNDCLASSEXW mainWindowClass;
+    ZeroMemory(&mainWindowClass, sizeof(mainWindowClass));
+    mainWindowClass.cbSize = sizeof(mainWindowClass);
+    mainWindowClass.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+    mainWindowClass.lpfnWndProc = WndProc;
+    mainWindowClass.hInstance = hInstance;
+    mainWindowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+    mainWindowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    mainWindowClass.lpszClassName = L"Window1";
+
+    WNDCLASSEXW dialogWindowClass;
+    ZeroMemory(&dialogWindowClass, sizeof(dialogWindowClass));
+    dialogWindowClass.cbSize = sizeof(dialogWindowClass);
+    dialogWindowClass.style = CS_HREDRAW | CS_VREDRAW;
+    dialogWindowClass.lpfnWndProc = ControlDialogProc;
+    dialogWindowClass.hInstance = hInstance;
+    dialogWindowClass.hCursor = LoadCursor(NULL, IDC_ARROW);
+    dialogWindowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    dialogWindowClass.lpszClassName = L"ModelControlDialog";
+
+    ATOM mainAtom = RegisterClassExW(&mainWindowClass);
+    ATOM dialogAtom = RegisterClassExW(&dialogWindowClass);
+    assert(mainAtom != 0);
+    assert(dialogAtom != 0);
 
     RECT rect;
     SetRect(&rect, 0, 0, WINDOW_SIZE_W, WINDOW_SIZE_H);
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW, FALSE);
 
-    HWND hWnd = CreateWindow(L"Window1",
-                             L"EnvMap Sample",
-                             WS_OVERLAPPEDWINDOW,
-                             CW_USEDEFAULT,
-                             CW_USEDEFAULT,
-                             rect.right - rect.left,
-                             rect.bottom - rect.top,
-                             NULL,
-                             NULL,
-                             GetModuleHandle(NULL),
-                             NULL);
+    HWND hWnd = CreateWindowW(L"Window1",
+                              L"PBR Study",
+                              WS_OVERLAPPEDWINDOW,
+                              CW_USEDEFAULT,
+                              CW_USEDEFAULT,
+                              rect.right - rect.left,
+                              rect.bottom - rect.top,
+                              NULL,
+                              NULL,
+                              hInstance,
+                              NULL);
 
     assert(hWnd != NULL);
     g_hWnd = hWnd;
 
-    ShowWindow(hWnd, SW_SHOW);
+    ShowWindow(hWnd, nShowCmd);
     UpdateWindow(hWnd);
 
     if (!InitAll(hWnd))
@@ -363,7 +751,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
         }
         else
         {
-            Sleep(16);
+            LARGE_INTEGER currentCounter;
+            QueryPerformanceCounter(&currentCounter);
+            const float deltaSeconds = static_cast<float>(currentCounter.QuadPart - g_prevFrameCounter.QuadPart) / static_cast<float>(g_perfFrequency.QuadPart);
+            g_prevFrameCounter = currentCounter;
+
+            UpdateCamera(deltaSeconds);
+            Sleep(1);
             Render();
         }
     }
@@ -376,10 +770,102 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
     {
+    case WM_KEYDOWN:
+    {
+        const bool isFirstPress = (lParam & 0x40000000) == 0;
+        if (isFirstPress)
+        {
+            if (wParam == VK_ESCAPE)
+            {
+                ToggleCursorVisible();
+                return 0;
+            }
+            if (wParam == VK_F1)
+            {
+                ShowModelDialog();
+                return 0;
+            }
+        }
+        break;
+    }
+
     case WM_DESTROY:
     {
         PostQuitMessage(0);
         g_bClose = true;
+        return 0;
+    }
+    }
+
+    return DefWindowProc(hWnd, msg, wParam, lParam);
+}
+
+LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        CreateWindowW(L"STATIC",
+                      L"F1で開くモデルダイアログです。",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      16,
+                      280,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"BUTTON",
+                      L"Xファイルを開く",
+                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                      16,
+                      50,
+                      150,
+                      32,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BUTTON_OPEN_MODEL)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"複数マテリアル付きの .x にも対応します。",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      92,
+                      280,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+        return 0;
+    }
+
+    case WM_COMMAND:
+    {
+        if (LOWORD(wParam) == ID_BUTTON_OPEN_MODEL && HIWORD(wParam) == BN_CLICKED)
+        {
+            OpenModelFileDialog();
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+    {
+        ShowWindow(hWnd, SW_HIDE);
+        return 0;
+    }
+
+    case WM_DESTROY:
+    {
+        if (g_hControlDialog == hWnd)
+        {
+            g_hControlDialog = NULL;
+        }
         return 0;
     }
     }
