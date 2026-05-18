@@ -710,13 +710,11 @@ static void Render()
         if (g_pBackgroundMesh != NULL)
         {
             D3DXMATRIX skyScale;
-            D3DXMATRIX skyTranslation;
             D3DXMATRIX skyWorld;
             D3DXMATRIX skyWvp;
 
-            D3DXMatrixScaling(&skyScale, 80.0f, 80.0f, 80.0f);
-            D3DXMatrixTranslation(&skyTranslation, eye.x, eye.y, eye.z);
-            skyWorld = skyScale * skyTranslation;
+            D3DXMatrixScaling(&skyScale, 8.0f, 8.0f, 8.0f);
+            skyWorld = skyScale;
             skyWvp = skyWorld * mV * mP;
 
             g_pd3dDevice->SetRenderState(D3DRS_CULLMODE, D3DCULL_CW);

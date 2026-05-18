@@ -64,7 +64,7 @@ float4 PixelShader1(float3 posWorld  : TEXCOORD0,
 
 float4 SkyboxPixelShader(float3 posWorld : TEXCOORD0) : COLOR
 {
-    float3 sampleDir = normalize(posWorld - g_eyePosW);
+    float3 sampleDir = normalize(posWorld);
     return float4(texCUBE(EnvSamp, sampleDir).rgb, 1.0f);
 }
 
