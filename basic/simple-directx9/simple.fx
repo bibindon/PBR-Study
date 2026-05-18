@@ -3,6 +3,11 @@ float4x4 g_matWorld;
 float3 g_eyePosW;
 float4 g_materialDiffuse;
 bool g_hasDiffuseTexture;
+float3 g_lightDirectionW;
+float4 g_lightColor;
+float g_lightPower;
+
+#define PI 3.14159265f
 
 textureCUBE EnvMap;
 samplerCUBE EnvSamp =
@@ -62,6 +67,24 @@ float4 PixelShader1(float3 posWorld  : TEXCOORD0,
     return float4(finalColor, g_materialDiffuse.a);
 }
 
+float4 PbrDiffusePixelShader(float3 posWorld  : TEXCOORD0,
+                             float3 normWorld : TEXCOORD1,
+                             float2 uv        : TEXCOORD2) : COLOR
+{
+    float3 albedo = g_materialDiffuse.rgb;
+    if (g_hasDiffuseTexture)
+    {
+        albedo *= tex2D(DiffuseSamp, uv).rgb;
+    }
+
+    float3 N = normalize(normWorld);
+    float3 L = normalize(g_lightDirectionW);
+    float NdotL = saturate(dot(N, L));
+
+    float3 diffuse = albedo * (1.0f / PI) * g_lightColor.rgb * g_lightPower * NdotL;
+    return float4(diffuse, g_materialDiffuse.a);
+}
+
 float4 SkyboxPixelShader(float3 posWorld : TEXCOORD0) : COLOR
 {
     float3 sampleDir = normalize(posWorld);
@@ -83,5 +106,14 @@ technique SkyboxTechnique
     {
         VertexShader = compile vs_3_0 VertexShader1();
         PixelShader = compile ps_3_0 SkyboxPixelShader();
+    }
+}
+
+technique PbrDiffuseTechnique
+{
+    pass P0
+    {
+        VertexShader = compile vs_3_0 VertexShader1();
+        PixelShader = compile ps_3_0 PbrDiffusePixelShader();
     }
 }
