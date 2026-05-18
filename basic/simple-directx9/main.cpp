@@ -957,7 +957,9 @@ static void Render()
     D3DXMatrixTranslation(&mW, -g_modelCenter.x, -g_modelCenter.y, -g_modelCenter.z);
 
     D3DXVECTOR3 eye = g_cameraPosition;
+    D3DXVECTOR4 cameraPositionW(eye.x, eye.y, eye.z, 1.0f);
     D3DXVECTOR4 pbrBaseColor(g_pbrBaseColorR, g_pbrBaseColorG, g_pbrBaseColorB, 1.0f);
+    g_pEffect->SetVector("g_cameraPositionW", &cameraPositionW);
     g_pEffect->SetVector("g_lightDirectionW", &g_lightDirectionW);
     g_pEffect->SetVector("g_lightColor", &g_lightColor);
     g_pEffect->SetFloat("g_lightPower", g_lightPower);
@@ -1000,7 +1002,7 @@ static void Render()
     {
         TextDraw(g_pFont, L"WASD:移動  E/Q:上下  Esc:カーソル表示切替  F1:モデルダイアログ", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
         TextDraw(g_pFont, g_isCursorVisible ? L"マウスルック: OFF" : L"マウスルック: ON", 10, 34, D3DCOLOR_XRGB(255, 255, 180));
-        TextDraw(g_pFont, L"表示モード: PBR Diffuse (Direct Light Only)", 10, 58, D3DCOLOR_XRGB(180, 255, 220));
+        TextDraw(g_pFont, L"表示モード: PBR Direct Light (Diffuse + Cook-Torrance Specular)", 10, 58, D3DCOLOR_XRGB(180, 255, 220));
         TextDraw(g_pFont, g_loadedMeshPath.c_str(), 10, 82, D3DCOLOR_XRGB(220, 240, 255));
         wchar_t pbrInfo[128];
         swprintf_s(pbrInfo,
@@ -1010,8 +1012,10 @@ static void Render()
                    g_pbrBaseColorB);
         TextDraw(g_pFont, pbrInfo, 10, 106, D3DCOLOR_XRGB(220, 255, 220));
         TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 130, D3DCOLOR_XRGB(220, 235, 255));
-        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 154, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 178, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Fixed Roughness: 0.50", 10, 154, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Fixed Metallic: 0.00", 10, 178, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 202, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 226, D3DCOLOR_XRGB(255, 230, 200));
 
         g_pEffect->SetMatrix("g_matWorldViewProj", &mWVP);
         g_pEffect->SetMatrix("g_matWorld", &mW);
@@ -1054,7 +1058,7 @@ static void Render()
             g_pEffect->SetMatrix("g_matWorld", &mW);
         }
 
-        g_pEffect->SetTechnique("PbrDiffuseTechnique");
+        g_pEffect->SetTechnique("PbrDirectLightTechnique");
 
         UINT passCount = 0;
         if (SUCCEEDED(g_pEffect->Begin(&passCount, 0)))
