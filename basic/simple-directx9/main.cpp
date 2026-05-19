@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cwctype>
 #include <map>
 #include <string>
@@ -48,6 +49,10 @@ static const UINT ID_EDIT_ENV_DIFFUSE_INTENSITY = 1020;
 static const UINT ID_SLIDER_ENV_DIFFUSE_INTENSITY = 1021;
 static const UINT ID_EDIT_ENV_DIFFUSE_MIP_LEVEL = 1022;
 static const UINT ID_SLIDER_ENV_DIFFUSE_MIP_LEVEL = 1023;
+static const UINT ID_BUTTON_OPEN_ENV_MAP = 1024;
+static const UINT ID_STATIC_ENV_MAP_PATH = 1025;
+static const UINT ID_STATIC_ENV_MAP_PREVIEW = 1026;
+static const UINT ID_STATIC_ENV_MAP_INFO = 1027;
 
 struct MeshMaterial
 {
@@ -112,6 +117,8 @@ LPD3DXMESH          g_pBackgroundMesh = NULL;
 
 // Env Cube
 LPDIRECT3DCUBETEXTURE9  g_pEnvCube = NULL;
+std::wstring            g_envCubePath = L"Texture1.dds";
+HBITMAP                 g_hEnvPreviewBitmap = NULL;
 
 // App
 HINSTANCE           g_hInstance = NULL;
@@ -708,6 +715,194 @@ static void SyncEnvDiffuseMipUi(HWND hWnd)
     g_isUpdatingEnvDiffuseMipUi = false;
 }
 
+static void ReplaceEnvPreviewBitmap(HWND hWnd, HBITMAP bitmap)
+{
+    HWND hPreview = GetDlgItem(hWnd, ID_STATIC_ENV_MAP_PREVIEW);
+    if (hPreview != NULL)
+    {
+        HBITMAP oldBitmap = reinterpret_cast<HBITMAP>(
+            SendMessageW(hPreview, STM_SETIMAGE, IMAGE_BITMAP, reinterpret_cast<LPARAM>(bitmap)));
+        if (oldBitmap != NULL && oldBitmap != bitmap)
+        {
+            DeleteObject(oldBitmap);
+        }
+    }
+    else if (bitmap != NULL)
+    {
+        DeleteObject(bitmap);
+        bitmap = NULL;
+    }
+
+    g_hEnvPreviewBitmap = bitmap;
+}
+
+static float GetLoadedEnvCubeMaxMipLevel()
+{
+    if (g_pEnvCube == NULL)
+    {
+        return 0.0f;
+    }
+
+    const UINT levelCount = g_pEnvCube->GetLevelCount();
+    if (levelCount == 0)
+    {
+        return 0.0f;
+    }
+
+    return static_cast<float>(levelCount - 1);
+}
+
+static void ClampEnvMipSettingsToLoadedTexture()
+{
+    const float maxMipLevel = GetLoadedEnvCubeMaxMipLevel();
+    if (g_envMaxMipLevel > maxMipLevel)
+    {
+        g_envMaxMipLevel = maxMipLevel;
+    }
+    if (g_envDiffuseMipLevel > maxMipLevel)
+    {
+        g_envDiffuseMipLevel = maxMipLevel;
+    }
+}
+
+static bool CreateEnvPreviewBitmap(HBITMAP* outBitmap)
+{
+    if (outBitmap == NULL || g_pd3dDevice == NULL || g_pEnvCube == NULL)
+    {
+        return false;
+    }
+
+    *outBitmap = NULL;
+
+    const UINT previewWidth = 320;
+    const UINT previewHeight = 320;
+
+    LPDIRECT3DSURFACE9 sourceSurface = NULL;
+    LPDIRECT3DSURFACE9 previewSurface = NULL;
+
+    HRESULT hr = g_pEnvCube->GetCubeMapSurface(D3DCUBEMAP_FACE_POSITIVE_Z, 0, &sourceSurface);
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(sourceSurface);
+        return false;
+    }
+
+    hr = g_pd3dDevice->CreateOffscreenPlainSurface(previewWidth,
+                                                   previewHeight,
+                                                   D3DFMT_A8R8G8B8,
+                                                   D3DPOOL_SYSTEMMEM,
+                                                   &previewSurface,
+                                                   NULL);
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(sourceSurface);
+        SAFE_RELEASE(previewSurface);
+        return false;
+    }
+
+    hr = D3DXLoadSurfaceFromSurface(previewSurface,
+                                    NULL,
+                                    NULL,
+                                    sourceSurface,
+                                    NULL,
+                                    NULL,
+                                    D3DX_FILTER_LINEAR,
+                                    0);
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(sourceSurface);
+        SAFE_RELEASE(previewSurface);
+        return false;
+    }
+
+    D3DLOCKED_RECT lockedRect;
+    hr = previewSurface->LockRect(&lockedRect, NULL, D3DLOCK_READONLY);
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(sourceSurface);
+        SAFE_RELEASE(previewSurface);
+        return false;
+    }
+
+    BITMAPINFO bitmapInfo;
+    ZeroMemory(&bitmapInfo, sizeof(bitmapInfo));
+    bitmapInfo.bmiHeader.biSize = sizeof(bitmapInfo.bmiHeader);
+    bitmapInfo.bmiHeader.biWidth = static_cast<LONG>(previewWidth);
+    bitmapInfo.bmiHeader.biHeight = -static_cast<LONG>(previewHeight);
+    bitmapInfo.bmiHeader.biPlanes = 1;
+    bitmapInfo.bmiHeader.biBitCount = 32;
+    bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+    void* bitmapBits = NULL;
+    HBITMAP bitmap = CreateDIBSection(NULL, &bitmapInfo, DIB_RGB_COLORS, &bitmapBits, NULL, 0);
+    if (bitmap == NULL || bitmapBits == NULL)
+    {
+        previewSurface->UnlockRect();
+        SAFE_RELEASE(sourceSurface);
+        SAFE_RELEASE(previewSurface);
+        if (bitmap != NULL)
+        {
+            DeleteObject(bitmap);
+        }
+        return false;
+    }
+
+    BYTE* dst = static_cast<BYTE*>(bitmapBits);
+    const BYTE* src = static_cast<const BYTE*>(lockedRect.pBits);
+    const size_t rowBytes = static_cast<size_t>(previewWidth) * 4;
+    for (UINT y = 0; y < previewHeight; ++y)
+    {
+        memcpy(dst + (static_cast<size_t>(y) * rowBytes),
+               src + (static_cast<size_t>(y) * lockedRect.Pitch),
+               rowBytes);
+    }
+
+    previewSurface->UnlockRect();
+    SAFE_RELEASE(sourceSurface);
+    SAFE_RELEASE(previewSurface);
+
+    *outBitmap = bitmap;
+    return true;
+}
+
+static void SyncEnvMapUi(HWND hWnd)
+{
+    if (hWnd == NULL)
+    {
+        return;
+    }
+
+    HWND hPath = GetDlgItem(hWnd, ID_STATIC_ENV_MAP_PATH);
+    if (hPath != NULL)
+    {
+        SetWindowTextW(hPath, g_envCubePath.empty() ? L"(環境マップ未設定)" : g_envCubePath.c_str());
+    }
+
+    HWND hInfo = GetDlgItem(hWnd, ID_STATIC_ENV_MAP_INFO);
+    if (hInfo != NULL)
+    {
+        wchar_t buffer[160];
+        swprintf_s(buffer,
+                   L"プレビューは CubeMap の +Z 面である。Mip Levels: %u",
+                   (g_pEnvCube != NULL) ? g_pEnvCube->GetLevelCount() : 0);
+        SetWindowTextW(hInfo, buffer);
+    }
+
+    HBITMAP previewBitmap = NULL;
+    if (CreateEnvPreviewBitmap(&previewBitmap))
+    {
+        ReplaceEnvPreviewBitmap(hWnd, previewBitmap);
+    }
+    else
+    {
+        ReplaceEnvPreviewBitmap(hWnd, NULL);
+        if (hInfo != NULL)
+        {
+            SetWindowTextW(hInfo, L"プレビューを生成できません。CubeMap DDS を確認してください。");
+        }
+    }
+}
+
 static void ApplyLightPowerFromUi(HWND hWnd)
 {
     HWND hEdit = GetDlgItem(hWnd, ID_EDIT_LIGHT_POWER);
@@ -1060,6 +1255,30 @@ static void ApplyEnvDiffuseMipFromSlider(HWND hWnd)
     const LONG sliderPosition = static_cast<LONG>(SendMessageW(hSlider, TBM_GETPOS, 0, 0));
     g_envDiffuseMipLevel = SliderPositionToEnvDiffuseMipLevel(sliderPosition);
     SyncEnvDiffuseMipUi(hWnd);
+}
+
+static bool LoadEnvironmentCubeFromFile(const std::wstring& filePath)
+{
+    if (g_pd3dDevice == NULL)
+    {
+        return false;
+    }
+
+    LPDIRECT3DCUBETEXTURE9 newEnvCube = NULL;
+    const HRESULT hr = D3DXCreateCubeTextureFromFileW(g_pd3dDevice,
+                                                      filePath.c_str(),
+                                                      &newEnvCube);
+    if (FAILED(hr))
+    {
+        SAFE_RELEASE(newEnvCube);
+        return false;
+    }
+
+    SAFE_RELEASE(g_pEnvCube);
+    g_pEnvCube = newEnvCube;
+    g_envCubePath = filePath;
+    ClampEnvMipSettingsToLoadedTexture();
+    return true;
 }
 
 static void ReleaseMeshResources()
@@ -1420,10 +1639,7 @@ static bool LoadEffectAndAssets()
         return false;
     }
 
-    hr = D3DXCreateCubeTextureFromFileW(g_pd3dDevice,
-                                        L"Texture1.dds",
-                                        &g_pEnvCube);
-    if (FAILED(hr))
+    if (!LoadEnvironmentCubeFromFile(g_envCubePath))
     {
         return false;
     }
@@ -1466,6 +1682,11 @@ static void Cleanup()
     ReleaseMeshResources();
     ReleaseBackgroundResources();
     SAFE_RELEASE(g_pEnvCube);
+    if (g_hEnvPreviewBitmap != NULL)
+    {
+        DeleteObject(g_hEnvPreviewBitmap);
+        g_hEnvPreviewBitmap = NULL;
+    }
     SAFE_RELEASE(g_pFont);
     SAFE_RELEASE(g_pEffect);
     SAFE_RELEASE(g_pd3dDevice);
@@ -1539,7 +1760,7 @@ static void ShowModelDialog()
 {
     if (g_hControlDialog == NULL)
     {
-        const int dialogWidth = 620;
+        const int dialogWidth = 920;
         const int dialogHeight = 980;
         RECT rcMain;
         GetWindowRect(g_hWnd, &rcMain);
@@ -1571,6 +1792,7 @@ static void ShowModelDialog()
     SyncEnvMaxMipUi(g_hControlDialog);
     SyncEnvDiffuseIntensityUi(g_hControlDialog);
     SyncEnvDiffuseMipUi(g_hControlDialog);
+    SyncEnvMapUi(g_hControlDialog);
     SetForegroundWindow(g_hControlDialog);
 }
 
@@ -1600,6 +1822,39 @@ static void OpenModelFileDialog()
                     L"読み込みエラー",
                     MB_ICONERROR | MB_OK);
     }
+}
+
+static void OpenEnvironmentMapFileDialog(HWND hWnd)
+{
+    wchar_t filePath[MAX_PATH] = L"";
+
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = (hWnd != NULL) ? hWnd : g_hWnd;
+    ofn.lpstrFilter = L"DDS Cube Texture (*.dds)\0*.dds\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = filePath;
+    ofn.nMaxFile = _countof(filePath);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    ofn.lpstrTitle = L"環境マップ用 DDS を選択";
+
+    if (!GetOpenFileNameW(&ofn))
+    {
+        return;
+    }
+
+    if (!LoadEnvironmentCubeFromFile(filePath))
+    {
+        MessageBoxW(hWnd,
+                    L"環境マップの読み込みに失敗しました。CubeMap 形式の DDS を選択してください。",
+                    L"読み込みエラー",
+                    MB_ICONERROR | MB_OK);
+        return;
+    }
+
+    SyncEnvMaxMipUi(hWnd);
+    SyncEnvDiffuseMipUi(hWnd);
+    SyncEnvMapUi(hWnd);
 }
 
 static void UpdateCamera(float deltaSeconds)
@@ -2089,6 +2344,67 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       36,
                       hWnd,
                       NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"環境マップ",
+                      WS_CHILD | WS_VISIBLE,
+                      560,
+                      16,
+                      220,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"",
+                      WS_CHILD | WS_VISIBLE | SS_PATHELLIPSIS,
+                      560,
+                      40,
+                      320,
+                      20,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATIC_ENV_MAP_PATH)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowExW(WS_EX_CLIENTEDGE,
+                        L"STATIC",
+                        NULL,
+                        WS_CHILD | WS_VISIBLE | SS_BITMAP | SS_CENTERIMAGE,
+                        560,
+                        72,
+                        320,
+                        320,
+                        hWnd,
+                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATIC_ENV_MAP_PREVIEW)),
+                        g_hInstance,
+                        NULL);
+
+        CreateWindowW(L"BUTTON",
+                      L"環境マップDDSを読み込み",
+                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                      560,
+                      408,
+                      220,
+                      32,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_BUTTON_OPEN_ENV_MAP)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"",
+                      WS_CHILD | WS_VISIBLE,
+                      560,
+                      452,
+                      320,
+                      36,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_STATIC_ENV_MAP_INFO)),
                       g_hInstance,
                       NULL);
 
@@ -2807,6 +3123,7 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         SyncEnvMaxMipUi(hWnd);
         SyncEnvDiffuseIntensityUi(hWnd);
         SyncEnvDiffuseMipUi(hWnd);
+        SyncEnvMapUi(hWnd);
         return 0;
     }
 
@@ -2815,6 +3132,11 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         if (LOWORD(wParam) == ID_BUTTON_OPEN_MODEL && HIWORD(wParam) == BN_CLICKED)
         {
             OpenModelFileDialog();
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_BUTTON_OPEN_ENV_MAP && HIWORD(wParam) == BN_CLICKED)
+        {
+            OpenEnvironmentMapFileDialog(hWnd);
             return 0;
         }
         if (LOWORD(wParam) == ID_EDIT_LIGHT_POWER && HIWORD(wParam) == EN_CHANGE && !g_isUpdatingLightPowerUi)
