@@ -53,6 +53,7 @@ static const UINT ID_BUTTON_OPEN_ENV_MAP = 1024;
 static const UINT ID_STATIC_ENV_MAP_PATH = 1025;
 static const UINT ID_STATIC_ENV_MAP_PREVIEW = 1026;
 static const UINT ID_STATIC_ENV_MAP_INFO = 1027;
+static const UINT ID_CHECK_REMOTE_DESKTOP = 1028;
 
 struct MeshMaterial
 {
@@ -145,6 +146,7 @@ bool                g_isUpdatingLightPowerUi = false;
 bool                g_isUpdatingBaseColorUi = false;
 bool                g_enableSrgbToLinear = true;
 bool                g_enableLinearToSrgb = true;
+bool                g_enableRemoteDesktopMouseLook = false;
 float               g_pbrRoughness = 0.5f;
 bool                g_isUpdatingRoughnessUi = false;
 float               g_pbrMetallic = 0.0f;
@@ -157,6 +159,8 @@ float               g_envDiffuseIntensity = 0.5f;
 bool                g_isUpdatingEnvDiffuseIntensityUi = false;
 float               g_envDiffuseMipLevel = 5.0f;
 bool                g_isUpdatingEnvDiffuseMipUi = false;
+POINT               g_lastRemoteDesktopCursorPos = {};
+bool                g_hasLastRemoteDesktopCursorPos = false;
 
 static std::wstring GetDirectoryPath(const std::wstring& path)
 {
@@ -546,6 +550,12 @@ static void SyncGammaUi(HWND hWnd)
     if (hLinearToSrgb != NULL)
     {
         SendMessageW(hLinearToSrgb, BM_SETCHECK, g_enableLinearToSrgb ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
+
+    HWND hRemoteDesktop = GetDlgItem(hWnd, ID_CHECK_REMOTE_DESKTOP);
+    if (hRemoteDesktop != NULL)
+    {
+        SendMessageW(hRemoteDesktop, BM_SETCHECK, g_enableRemoteDesktopMouseLook ? BST_CHECKED : BST_UNCHECKED, 0);
     }
 }
 
@@ -1352,7 +1362,12 @@ static void ToggleCursorVisible()
     SetCursorVisible(!g_isCursorVisible);
     if (!g_isCursorVisible)
     {
+        g_hasLastRemoteDesktopCursorPos = false;
         CenterCursorInClient();
+    }
+    else
+    {
+        g_hasLastRemoteDesktopCursorPos = false;
     }
 }
 
@@ -1866,6 +1881,7 @@ static void UpdateCamera(float deltaSeconds)
 
     if (GetActiveWindow() != g_hWnd)
     {
+        g_hasLastRemoteDesktopCursorPos = false;
         return;
     }
 
@@ -1911,19 +1927,34 @@ static void UpdateCamera(float deltaSeconds)
 
     if (!g_isCursorVisible)
     {
-        RECT rc;
-        GetClientRect(g_hWnd, &rc);
-
-        POINT center;
-        center.x = (rc.left + rc.right) / 2;
-        center.y = (rc.top + rc.bottom) / 2;
-        ClientToScreen(g_hWnd, &center);
-
         POINT cursorPos;
         GetCursorPos(&cursorPos);
+        LONG deltaX = 0;
+        LONG deltaY = 0;
 
-        const LONG deltaX = cursorPos.x - center.x;
-        const LONG deltaY = cursorPos.y - center.y;
+        if (g_enableRemoteDesktopMouseLook)
+        {
+            if (g_hasLastRemoteDesktopCursorPos)
+            {
+                deltaX = cursorPos.x - g_lastRemoteDesktopCursorPos.x;
+                deltaY = cursorPos.y - g_lastRemoteDesktopCursorPos.y;
+            }
+            g_lastRemoteDesktopCursorPos = cursorPos;
+            g_hasLastRemoteDesktopCursorPos = true;
+        }
+        else
+        {
+            RECT rc;
+            GetClientRect(g_hWnd, &rc);
+
+            POINT center;
+            center.x = (rc.left + rc.right) / 2;
+            center.y = (rc.top + rc.bottom) / 2;
+            ClientToScreen(g_hWnd, &center);
+
+            deltaX = cursorPos.x - center.x;
+            deltaY = cursorPos.y - center.y;
+        }
 
         g_cameraYaw += static_cast<float>(deltaX) * g_mouseSensitivity;
         g_cameraPitch -= static_cast<float>(deltaY) * g_mouseSensitivity;
@@ -1938,7 +1969,14 @@ static void UpdateCamera(float deltaSeconds)
             g_cameraPitch = -pitchLimit;
         }
 
-        CenterCursorInClient();
+        if (!g_enableRemoteDesktopMouseLook)
+        {
+            CenterCursorInClient();
+        }
+    }
+    else
+    {
+        g_hasLastRemoteDesktopCursorPos = false;
     }
 }
 
@@ -1993,44 +2031,45 @@ static void Render()
     {
         TextDraw(g_pFont, L"WASD:移動  E/Q:上下  Esc:カーソル表示切替  F1:モデルダイアログ", 10, 10, D3DCOLOR_XRGB(255, 255, 255));
         TextDraw(g_pFont, g_isCursorVisible ? L"マウスルック: OFF" : L"マウスルック: ON", 10, 34, D3DCOLOR_XRGB(255, 255, 180));
-        TextDraw(g_pFont, L"表示モード: PBR Direct Light (Diffuse + Cook-Torrance Specular)", 10, 58, D3DCOLOR_XRGB(180, 255, 220));
+        TextDraw(g_pFont, g_enableRemoteDesktopMouseLook ? L"Remote Desktop Mouse: ON" : L"Remote Desktop Mouse: OFF", 10, 58, D3DCOLOR_XRGB(255, 255, 180));
+        TextDraw(g_pFont, L"表示モード: PBR Direct Light (Diffuse + Cook-Torrance Specular)", 10, 82, D3DCOLOR_XRGB(180, 255, 220));
         wchar_t modelCountInfo[128];
         swprintf_s(modelCountInfo, L"Model Count: %zu", g_modelInstances.size());
-        TextDraw(g_pFont, modelCountInfo, 10, 82, D3DCOLOR_XRGB(220, 240, 255));
-        TextDraw(g_pFont, g_loadedMeshPath.empty() ? L"(no recent model)" : g_loadedMeshPath.c_str(), 10, 106, D3DCOLOR_XRGB(220, 240, 255));
+        TextDraw(g_pFont, modelCountInfo, 10, 106, D3DCOLOR_XRGB(220, 240, 255));
+        TextDraw(g_pFont, g_loadedMeshPath.empty() ? L"(no recent model)" : g_loadedMeshPath.c_str(), 10, 130, D3DCOLOR_XRGB(220, 240, 255));
         wchar_t pbrInfo[128];
         swprintf_s(pbrInfo,
                    L"PBR BaseColor Factor: %.2f, %.2f, %.2f",
                    g_pbrBaseColorR,
                    g_pbrBaseColorG,
                    g_pbrBaseColorB);
-        TextDraw(g_pFont, pbrInfo, 10, 130, D3DCOLOR_XRGB(220, 255, 220));
-        TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 154, D3DCOLOR_XRGB(220, 235, 255));
+        TextDraw(g_pFont, pbrInfo, 10, 154, D3DCOLOR_XRGB(220, 255, 220));
+        TextDraw(g_pFont, L"albedo = BaseColorFactor * MaterialDiffuse * TextureColor", 10, 178, D3DCOLOR_XRGB(220, 235, 255));
         wchar_t roughnessInfo[128];
         swprintf_s(roughnessInfo, L"PBR Roughness: %.2f", g_pbrRoughness);
-        TextDraw(g_pFont, roughnessInfo, 10, 178, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, roughnessInfo, 10, 202, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t metallicInfo[128];
         swprintf_s(metallicInfo, L"PBR Metallic: %.2f", g_pbrMetallic);
-        TextDraw(g_pFont, metallicInfo, 10, 202, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, metallicInfo, 10, 226, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envReflectionInfo[128];
         swprintf_s(envReflectionInfo, L"Env Reflection Intensity: %.2f", g_envReflectionIntensity);
-        TextDraw(g_pFont, envReflectionInfo, 10, 226, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, L"Env Reflection: Simple CubeMap", 10, 250, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envReflectionInfo, 10, 250, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Env Reflection: Simple CubeMap", 10, 274, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envMipInfo[128];
         swprintf_s(envMipInfo, L"Env Max Mip Level: %.2f", g_envMaxMipLevel);
-        TextDraw(g_pFont, envMipInfo, 10, 274, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envMipInfo, 10, 298, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envMipApproxInfo[128];
         swprintf_s(envMipApproxInfo, L"Env Mip Approx: %.2f", g_pbrRoughness * g_envMaxMipLevel);
-        TextDraw(g_pFont, envMipApproxInfo, 10, 298, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envMipApproxInfo, 10, 322, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envDiffuseIntensityInfo[128];
         swprintf_s(envDiffuseIntensityInfo, L"Env Diffuse Intensity: %.2f", g_envDiffuseIntensity);
-        TextDraw(g_pFont, envDiffuseIntensityInfo, 10, 322, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envDiffuseIntensityInfo, 10, 346, D3DCOLOR_XRGB(255, 230, 200));
         wchar_t envDiffuseMipInfo[128];
         swprintf_s(envDiffuseMipInfo, L"Env Diffuse Mip Level: %.2f", g_envDiffuseMipLevel);
-        TextDraw(g_pFont, envDiffuseMipInfo, 10, 346, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, L"Env Diffuse: Simple Normal CubeMap", 10, 370, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 394, D3DCOLOR_XRGB(255, 230, 200));
-        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 418, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, envDiffuseMipInfo, 10, 370, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, L"Env Diffuse: Simple Normal CubeMap", 10, 394, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableSrgbToLinear ? L"sRGB To Linear: ON" : L"sRGB To Linear: OFF", 10, 418, D3DCOLOR_XRGB(255, 230, 200));
+        TextDraw(g_pFont, g_enableLinearToSrgb ? L"Linear To sRGB: ON" : L"Linear To sRGB: OFF", 10, 442, D3DCOLOR_XRGB(255, 230, 200));
 
         g_pEffect->SetTexture("EnvMap", g_pEnvCube);
 
@@ -3114,6 +3153,30 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                       g_hInstance,
                       NULL);
 
+        CreateWindowW(L"BUTTON",
+                      L"Remote Desktop",
+                      WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                      16,
+                      820,
+                      180,
+                      24,
+                      hWnd,
+                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(ID_CHECK_REMOTE_DESKTOP)),
+                      g_hInstance,
+                      NULL);
+
+        CreateWindowW(L"STATIC",
+                      L"ON のときは絶対座標の差分でマウスルックします。",
+                      WS_CHILD | WS_VISIBLE,
+                      16,
+                      848,
+                      360,
+                      20,
+                      hWnd,
+                      NULL,
+                      g_hInstance,
+                      NULL);
+
         SyncLightPowerUi(hWnd);
         SyncBaseColorUi(hWnd);
         SyncGammaUi(hWnd);
@@ -3206,6 +3269,14 @@ LRESULT CALLBACK ControlDialogProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             {
                 g_enableLinearToSrgb = (SendMessageW(reinterpret_cast<HWND>(lParam), BM_GETCHECK, 0, 0) == BST_CHECKED);
             }
+            SyncGammaUi(hWnd);
+            return 0;
+        }
+        if (LOWORD(wParam) == ID_CHECK_REMOTE_DESKTOP && HIWORD(wParam) == BN_CLICKED)
+        {
+            g_enableRemoteDesktopMouseLook =
+                (SendMessageW(reinterpret_cast<HWND>(lParam), BM_GETCHECK, 0, 0) == BST_CHECKED);
+            g_hasLastRemoteDesktopCursorPos = false;
             SyncGammaUi(hWnd);
             return 0;
         }
