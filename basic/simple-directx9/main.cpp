@@ -118,7 +118,8 @@ LPD3DXMESH          g_pBackgroundMesh = NULL;
 
 // Env Cube
 LPDIRECT3DCUBETEXTURE9  g_pEnvCube = NULL;
-std::wstring            g_envCubePath = L"Texture1.dds";
+std::wstring            g_resourceDirectory;
+std::wstring            g_envCubePath;
 HBITMAP                 g_hEnvPreviewBitmap = NULL;
 
 // App
@@ -146,18 +147,18 @@ bool                g_isUpdatingLightPowerUi = false;
 bool                g_isUpdatingBaseColorUi = false;
 bool                g_enableSrgbToLinear = true;
 bool                g_enableLinearToSrgb = true;
-bool                g_enableRemoteDesktopMouseLook = false;
-float               g_pbrRoughness = 0.5f;
+bool                g_enableRemoteDesktopMouseLook = true;
+float               g_pbrRoughness = 0.85f;
 bool                g_isUpdatingRoughnessUi = false;
 float               g_pbrMetallic = 0.0f;
 bool                g_isUpdatingMetallicUi = false;
-float               g_envReflectionIntensity = 1.0f;
+float               g_envReflectionIntensity = 0.05f;
 bool                g_isUpdatingEnvReflectionUi = false;
 float               g_envMaxMipLevel = 5.0f;
 bool                g_isUpdatingEnvMaxMipUi = false;
-float               g_envDiffuseIntensity = 0.5f;
+float               g_envDiffuseIntensity = 0.8f;
 bool                g_isUpdatingEnvDiffuseIntensityUi = false;
-float               g_envDiffuseMipLevel = 5.0f;
+float               g_envDiffuseMipLevel = 3.0f;
 bool                g_isUpdatingEnvDiffuseMipUi = false;
 POINT               g_lastRemoteDesktopCursorPos = {};
 bool                g_hasLastRemoteDesktopCursorPos = false;
@@ -171,6 +172,16 @@ static std::wstring GetDirectoryPath(const std::wstring& path)
     }
 
     return path.substr(0, pos);
+}
+
+static bool IsAbsolutePath(const std::wstring& path)
+{
+    if (path.size() >= 2 && path[1] == L':')
+    {
+        return true;
+    }
+
+    return path.size() >= 2 && path[0] == L'\\' && path[1] == L'\\';
 }
 
 static std::wstring JoinPath(const std::wstring& dir, const std::wstring& fileName)
@@ -187,6 +198,82 @@ static std::wstring JoinPath(const std::wstring& dir, const std::wstring& fileNa
     }
 
     return dir + L"\\" + fileName;
+}
+
+static bool DirectoryExists(const std::wstring& path)
+{
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+static std::wstring GetExecutableDirectory()
+{
+    wchar_t modulePath[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(NULL, modulePath, _countof(modulePath));
+    if (length == 0 || length >= _countof(modulePath))
+    {
+        return L".";
+    }
+
+    return GetDirectoryPath(modulePath);
+}
+
+static std::wstring FindResourceDirectoryFrom(const std::wstring& startDirectory)
+{
+    std::wstring current = startDirectory;
+    for (int depth = 0; depth < 8 && !current.empty(); ++depth)
+    {
+        const std::wstring candidate = JoinPath(current, L"res");
+        if (DirectoryExists(candidate))
+        {
+            return candidate;
+        }
+
+        const std::wstring parent = GetDirectoryPath(current);
+        if (parent == current)
+        {
+            break;
+        }
+        current = parent;
+    }
+
+    return std::wstring();
+}
+
+static void InitializeResourceDirectory()
+{
+    if (!g_resourceDirectory.empty())
+    {
+        return;
+    }
+
+    wchar_t currentDirectory[MAX_PATH];
+    const DWORD currentLength = GetCurrentDirectoryW(_countof(currentDirectory), currentDirectory);
+    if (currentLength > 0 && currentLength < _countof(currentDirectory))
+    {
+        g_resourceDirectory = FindResourceDirectoryFrom(currentDirectory);
+    }
+
+    if (g_resourceDirectory.empty())
+    {
+        g_resourceDirectory = FindResourceDirectoryFrom(GetExecutableDirectory());
+    }
+
+    if (g_resourceDirectory.empty())
+    {
+        g_resourceDirectory = L"res";
+    }
+}
+
+static std::wstring GetResourcePath(const std::wstring& relativeOrAbsolutePath)
+{
+    if (relativeOrAbsolutePath.empty() || IsAbsolutePath(relativeOrAbsolutePath))
+    {
+        return relativeOrAbsolutePath;
+    }
+
+    InitializeResourceDirectory();
+    return JoinPath(g_resourceDirectory, relativeOrAbsolutePath);
 }
 
 static std::wstring NormalizePathKey(const std::wstring& path)
@@ -1676,12 +1763,12 @@ static bool LoadEffectAndAssets()
         return false;
     }
 
-    if (!LoadBackgroundMesh(L"cubeBack.x"))
+    if (!LoadBackgroundMesh(GetResourcePath(L"cubeBack.x")))
     {
         return false;
     }
 
-    return AddModelInstanceFromFile(L"sphere.x", false);
+    return AddModelInstanceFromFile(GetResourcePath(L"sphere.x"), false);
 }
 
 static void Cleanup()
@@ -1822,6 +1909,8 @@ static void OpenModelFileDialog()
     ofn.lpstrFilter = L"X Files (*.x)\0*.x\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile = filePath;
     ofn.nMaxFile = _countof(filePath);
+    InitializeResourceDirectory();
+    ofn.lpstrInitialDir = g_resourceDirectory.empty() ? NULL : g_resourceDirectory.c_str();
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle = L"Xファイルを選択";
 
@@ -1850,6 +1939,8 @@ static void OpenEnvironmentMapFileDialog(HWND hWnd)
     ofn.lpstrFilter = L"DDS Cube Texture (*.dds)\0*.dds\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile = filePath;
     ofn.nMaxFile = _countof(filePath);
+    InitializeResourceDirectory();
+    ofn.lpstrInitialDir = g_resourceDirectory.empty() ? NULL : g_resourceDirectory.c_str();
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle = L"環境マップ用 DDS を選択";
 
@@ -2207,6 +2298,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance,
                     _In_ int nShowCmd)
 {
     g_hInstance = hInstance;
+    InitializeResourceDirectory();
+    g_envCubePath = GetResourcePath(L"Texture1.dds");
 
     WNDCLASSEXW mainWindowClass;
     ZeroMemory(&mainWindowClass, sizeof(mainWindowClass));
